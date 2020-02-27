@@ -3,7 +3,7 @@
  * auto_explain.c
  *
  *
- * Copyright (c) 2008-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2008-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/auto_explain/auto_explain.c
@@ -320,10 +320,12 @@ explain_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction,
 			prev_ExecutorRun(queryDesc, direction, count, execute_once);
 		else
 			standard_ExecutorRun(queryDesc, direction, count, execute_once);
+		nesting_level--;
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		nesting_level--;
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
 }
@@ -341,10 +343,12 @@ explain_ExecutorFinish(QueryDesc *queryDesc)
 			prev_ExecutorFinish(queryDesc);
 		else
 			standard_ExecutorFinish(queryDesc);
+		nesting_level--;
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		nesting_level--;
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
 }

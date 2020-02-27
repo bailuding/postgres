@@ -5,7 +5,7 @@
  *	  Planning is complete, we just need to convert the selected
  *	  Path into a Plan.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -559,8 +559,8 @@ create_scan_plan(PlannerInfo *root, Path *best_path, int flags)
 	 * For paranoia's sake, don't modify the stored baserestrictinfo list.
 	 */
 	if (best_path->param_info)
-		scan_clauses = list_concat_copy(scan_clauses,
-										best_path->param_info->ppi_clauses);
+		scan_clauses = list_concat(list_copy(scan_clauses),
+								   best_path->param_info->ppi_clauses);
 
 	/*
 	 * Detect whether we have any pseudoconstant quals to deal with.  Then, if
@@ -1118,7 +1118,6 @@ create_append_plan(PlannerInfo *root, AppendPath *best_path, int flags)
 	plan->plan.qual = NIL;
 	plan->plan.lefttree = NULL;
 	plan->plan.righttree = NULL;
-	plan->apprelids = rel->relids;
 
 	if (pathkeys != NIL)
 	{
@@ -1296,7 +1295,6 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path,
 	plan->qual = NIL;
 	plan->lefttree = NULL;
 	plan->righttree = NULL;
-	node->apprelids = rel->relids;
 
 	/*
 	 * Compute sort column info, and adjust MergeAppend's tlist as needed.
@@ -2216,9 +2214,10 @@ create_groupingsets_plan(PlannerInfo *root, GroupingSetsPath *best_path)
 	chain = NIL;
 	if (list_length(rollups) > 1)
 	{
+		ListCell   *lc2 = lnext(list_head(rollups));
 		bool		is_first_sort = ((RollupData *) linitial(rollups))->is_hashed;
 
-		for_each_cell(lc, rollups, list_second_cell(rollups))
+		for_each_cell(lc, lc2)
 		{
 			RollupData *rollup = lfirst(lc);
 			AttrNumber *new_grpColIdx;
@@ -4268,7 +4267,7 @@ create_mergejoin_plan(PlannerInfo *root,
 				elog(ERROR, "outer pathkeys do not match mergeclauses");
 			opathkey = (PathKey *) lfirst(lop);
 			opeclass = opathkey->pk_eclass;
-			lop = lnext(outerpathkeys, lop);
+			lop = lnext(lop);
 			if (oeclass != opeclass)
 				elog(ERROR, "outer pathkeys do not match mergeclauses");
 		}
@@ -4295,7 +4294,7 @@ create_mergejoin_plan(PlannerInfo *root,
 			if (ieclass == ipeclass)
 			{
 				/* successful first match to this inner pathkey */
-				lip = lnext(innerpathkeys, lip);
+				lip = lnext(lip);
 				first_inner_match = true;
 			}
 		}
@@ -4854,7 +4853,7 @@ fix_indexqual_operand(Node *node, IndexOptInfo *index, int indexcol)
 				else
 					elog(ERROR, "index key does not match expected index column");
 			}
-			indexpr_item = lnext(index->indexprs, indexpr_item);
+			indexpr_item = lnext(indexpr_item);
 		}
 	}
 
@@ -5110,11 +5109,13 @@ static void
 bitmap_subplan_mark_shared(Plan *plan)
 {
 	if (IsA(plan, BitmapAnd))
-		bitmap_subplan_mark_shared(linitial(((BitmapAnd *) plan)->bitmapplans));
+		bitmap_subplan_mark_shared(
+								   linitial(((BitmapAnd *) plan)->bitmapplans));
 	else if (IsA(plan, BitmapOr))
 	{
 		((BitmapOr *) plan)->isshared = true;
-		bitmap_subplan_mark_shared(linitial(((BitmapOr *) plan)->bitmapplans));
+		bitmap_subplan_mark_shared(
+								   linitial(((BitmapOr *) plan)->bitmapplans));
 	}
 	else if (IsA(plan, BitmapIndexScan))
 		((BitmapIndexScan *) plan)->isshared = true;

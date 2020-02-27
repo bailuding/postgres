@@ -3,7 +3,7 @@
  * lock.c
  *	  POSTGRES primary lock mechanism
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -216,9 +216,9 @@ static PROCLOCK *FastPathGetRelationLockEntry(LOCALLOCK *locallock);
 
 /*
  * To make the fast-path lock mechanism work, we must have some way of
- * preventing the use of the fast-path when a conflicting lock might be present.
- * We partition* the locktag space into FAST_PATH_STRONG_LOCK_HASH_PARTITIONS,
- * and maintain an integer count of the number of "strong" lockers
+ * preventing the use of the fast-path when a conflicting lock might be
+ * present.  We partition* the locktag space into FAST_PATH_HASH_BUCKETS
+ * partitions, and maintain an integer count of the number of "strong" lockers
  * in each partition.  When any "strong" lockers are present (which is
  * hopefully not very often), the fast-path mechanism can't be used, and we
  * must fall back to the slower method of pushing matching locks directly
@@ -746,7 +746,7 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	ResourceOwner owner;
 	uint32		hashcode;
 	LWLock	   *partitionLock;
-	bool		found_conflict;
+	int			status;
 	bool		log_lock = false;
 
 	if (lockmethodid <= 0 || lockmethodid >= lengthof(LockMethods))
@@ -979,12 +979,12 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	 * (That's last because most complex check.)
 	 */
 	if (lockMethodTable->conflictTab[lockmode] & lock->waitMask)
-		found_conflict = true;
+		status = STATUS_FOUND;
 	else
-		found_conflict = LockCheckConflicts(lockMethodTable, lockmode,
+		status = LockCheckConflicts(lockMethodTable, lockmode,
 									lock, proclock);
 
-	if (!found_conflict)
+	if (status == STATUS_OK)
 	{
 		/* No conflict with held or previously requested locks */
 		GrantLock(lock, proclock, lockmode);
@@ -992,10 +992,12 @@ LockAcquireExtended(const LOCKTAG *locktag,
 	}
 	else
 	{
+		Assert(status == STATUS_FOUND);
+
 		/*
 		 * We can't acquire the lock immediately.  If caller specified no
-		 * blocking, remove useless table entries and return
-		 * LOCKACQUIRE_NOT_AVAIL without waiting.
+		 * blocking, remove useless table entries and return NOT_AVAIL without
+		 * waiting.
 		 */
 		if (dontWait)
 		{
@@ -1328,7 +1330,7 @@ RemoveLocalLock(LOCALLOCK *locallock)
  * LockCheckConflicts -- test whether requested lock conflicts
  *		with those already granted
  *
- * Returns true if conflict, false if no conflict.
+ * Returns STATUS_FOUND if conflict, STATUS_OK if no conflict.
  *
  * NOTES:
  *		Here's what makes this complicated: one process's locks don't
@@ -1338,7 +1340,7 @@ RemoveLocalLock(LOCALLOCK *locallock)
  * the same group.  So, we must subtract off these locks when determining
  * whether the requested new lock conflicts with those already held.
  */
-bool
+int
 LockCheckConflicts(LockMethod lockMethodTable,
 				   LOCKMODE lockmode,
 				   LOCK *lock,
@@ -1365,7 +1367,7 @@ LockCheckConflicts(LockMethod lockMethodTable,
 	if (!(conflictMask & lock->grantMask))
 	{
 		PROCLOCK_PRINT("LockCheckConflicts: no conflict", proclock);
-		return false;
+		return STATUS_OK;
 	}
 
 	/*
@@ -1391,7 +1393,7 @@ LockCheckConflicts(LockMethod lockMethodTable,
 	if (totalConflictsRemaining == 0)
 	{
 		PROCLOCK_PRINT("LockCheckConflicts: resolved (simple)", proclock);
-		return false;
+		return STATUS_OK;
 	}
 
 	/* If no group locking, it's definitely a conflict. */
@@ -1400,7 +1402,7 @@ LockCheckConflicts(LockMethod lockMethodTable,
 		Assert(proclock->tag.myProc == MyProc);
 		PROCLOCK_PRINT("LockCheckConflicts: conflicting (simple)",
 					   proclock);
-		return true;
+		return STATUS_FOUND;
 	}
 
 	/*
@@ -1437,7 +1439,7 @@ LockCheckConflicts(LockMethod lockMethodTable,
 			{
 				PROCLOCK_PRINT("LockCheckConflicts: resolved (group)",
 							   proclock);
-				return false;
+				return STATUS_OK;
 			}
 		}
 		otherproclock = (PROCLOCK *)
@@ -1447,7 +1449,7 @@ LockCheckConflicts(LockMethod lockMethodTable,
 
 	/* Nope, it's a real conflict. */
 	PROCLOCK_PRINT("LockCheckConflicts: conflicting (group)", proclock);
-	return true;
+	return STATUS_FOUND;
 }
 
 /*
@@ -2707,7 +2709,7 @@ FastPathTransferRelationLocks(LockMethod lockMethodTable, const LOCKTAG *locktag
 }
 
 /*
- * FastPathGetRelationLockEntry
+ * FastPathGetLockEntry
  *		Return the PROCLOCK for a lock originally taken via the fast-path,
  *		transferring it to the primary lock table if necessary.
  *
@@ -2894,8 +2896,8 @@ GetLockConflicts(const LOCKTAG *locktag, LOCKMODE lockmode, int *countp)
 			 * the lock, then we needn't examine the individual relation IDs
 			 * at all; none of them can be relevant.
 			 *
-			 * See FastPathTransferRelationLocks() for discussion of why we do
-			 * this test after acquiring the lock.
+			 * See FastPathTransferLocks() for discussion of why we do this
+			 * test after acquiring the lock.
 			 */
 			if (proc->databaseId != locktag->locktag_field1)
 			{

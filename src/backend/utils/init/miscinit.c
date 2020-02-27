@@ -3,7 +3,7 @@
  * miscinit.c
  *	  miscellaneous initialization support stuff
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -26,7 +26,9 @@
 #include <pwd.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#ifdef HAVE_UTIME_H
 #include <utime.h>
+#endif
 
 #include "access/htup_details.h"
 #include "catalog/pg_authid.h"
@@ -820,7 +822,7 @@ GetUserNameFromId(Oid roleid, bool noerr)
  * ($DATADIR/postmaster.pid) and Unix-socket-file lockfiles ($SOCKFILE.lock).
  * Both kinds of files contain the same info initially, although we can add
  * more information to a data-directory lockfile after it's created, using
- * AddToDataDirLockFile().  See pidfile.h for documentation of the contents
+ * AddToDataDirLockFile().  See miscadmin.h for documentation of the contents
  * of these lockfiles.
  *
  * On successful lockfile creation, a proc_exit callback to remove the
@@ -1087,7 +1089,7 @@ CreateLockFile(const char *filename, bool amPostmaster,
 	}
 
 	/*
-	 * Successfully created the file, now fill it.  See comment in pidfile.h
+	 * Successfully created the file, now fill it.  See comment in miscadmin.h
 	 * about the contents.  Note that we write the same first five lines into
 	 * both datadir and socket lockfiles; although more stuff may get added to
 	 * the datadir lockfile later.
@@ -1211,8 +1213,29 @@ TouchSocketLockFiles(void)
 		if (strcmp(socketLockFile, DIRECTORY_LOCK_FILE) == 0)
 			continue;
 
-		/* we just ignore any error here */
-		(void) utime(socketLockFile, NULL);
+		/*
+		 * utime() is POSIX standard, utimes() is a common alternative; if we
+		 * have neither, fall back to actually reading the file (which only
+		 * sets the access time not mod time, but that should be enough in
+		 * most cases).  In all paths, we ignore errors.
+		 */
+#ifdef HAVE_UTIME
+		utime(socketLockFile, NULL);
+#else							/* !HAVE_UTIME */
+#ifdef HAVE_UTIMES
+		utimes(socketLockFile, NULL);
+#else							/* !HAVE_UTIMES */
+		int			fd;
+		char		buffer[1];
+
+		fd = open(socketLockFile, O_RDONLY | PG_BINARY, 0);
+		if (fd >= 0)
+		{
+			read(fd, buffer, sizeof(buffer));
+			close(fd);
+		}
+#endif							/* HAVE_UTIMES */
+#endif							/* HAVE_UTIME */
 	}
 }
 
@@ -1310,7 +1333,8 @@ AddToDataDirLockFile(int target_line, const char *str)
 	len = strlen(destbuffer);
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_LOCK_FILE_ADDTODATADIR_WRITE);
-	if (pg_pwrite(fd, destbuffer, len, 0) != len)
+	if (lseek(fd, (off_t) 0, SEEK_SET) != 0 ||
+		(int) write(fd, destbuffer, len) != len)
 	{
 		pgstat_report_wait_end();
 		/* if write didn't set errno, assume problem is no disk space */

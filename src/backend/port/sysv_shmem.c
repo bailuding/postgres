@@ -9,7 +9,7 @@
  * exist, though, because mmap'd shmem provides no way to find out how
  * many processes are attached, which we need for interlocking purposes.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -390,12 +390,11 @@ PGSharedMemoryAttach(IpcMemoryId shmId,
 
 	/*
 	 * Try to attach to the segment and see if it matches our data directory.
-	 * This avoids any risk of duplicate-shmem-key conflicts on machines that
-	 * are running several postmasters under the same userid.
-	 *
-	 * (When we're called from PGSharedMemoryCreate, this stat call is
-	 * duplicative; but since this isn't a high-traffic case it's not worth
-	 * trying to optimize.)
+	 * This avoids key-conflict problems on machines that are running several
+	 * postmasters under the same userid and port number.  (That would not
+	 * ordinarily happen in production, but it can happen during parallel
+	 * testing.  Since our test setups don't open any TCP ports on Unix, such
+	 * cases don't conflict otherwise.)
 	 */
 	if (stat(DataDir, &statbuf) < 0)
 		return SHMSTATE_ANALYSIS_FAILURE;	/* can't stat; be conservative */
@@ -618,9 +617,12 @@ AnonymousShmemDetach(int status, Datum arg)
  * we do not fail upon collision with foreign shmem segments.  The idea here
  * is to detect and re-use keys that may have been assigned by a crashed
  * postmaster or backend.
+ *
+ * The port number is passed for possible use as a key (for SysV, we use
+ * it to generate the starting shmem key).
  */
 PGShmemHeader *
-PGSharedMemoryCreate(Size size,
+PGSharedMemoryCreate(Size size, int port,
 					 PGShmemHeader **shim)
 {
 	IpcMemoryKey NextShmemSegID;
@@ -628,17 +630,6 @@ PGSharedMemoryCreate(Size size,
 	PGShmemHeader *hdr;
 	struct stat statbuf;
 	Size		sysvsize;
-
-	/*
-	 * We use the data directory's ID info (inode and device numbers) to
-	 * positively identify shmem segments associated with this data dir, and
-	 * also as seeds for searching for a free shmem key.
-	 */
-	if (stat(DataDir, &statbuf) < 0)
-		ereport(FATAL,
-				(errcode_for_file_access(),
-				 errmsg("could not stat data directory \"%s\": %m",
-						DataDir)));
 
 	/* Complain if hugepages demanded but we can't possibly support them */
 #if !defined(MAP_HUGETLB)
@@ -668,10 +659,10 @@ PGSharedMemoryCreate(Size size,
 	/*
 	 * Loop till we find a free IPC key.  Trust CreateDataDirLockFile() to
 	 * ensure no more than one postmaster per data directory can enter this
-	 * loop simultaneously.  (CreateDataDirLockFile() does not entirely ensure
-	 * that, but prefer fixing it over coping here.)
+	 * loop simultaneously.  (CreateDataDirLockFile() does not ensure that,
+	 * but prefer fixing it over coping here.)
 	 */
-	NextShmemSegID = statbuf.st_ino;
+	NextShmemSegID = 1 + port * 1000;
 
 	for (;;)
 	{
@@ -757,6 +748,11 @@ PGSharedMemoryCreate(Size size,
 	hdr->dsm_control = 0;
 
 	/* Fill in the data directory ID info, too */
+	if (stat(DataDir, &statbuf) < 0)
+		ereport(FATAL,
+				(errcode_for_file_access(),
+				 errmsg("could not stat data directory \"%s\": %m",
+						DataDir)));
 	hdr->device = statbuf.st_dev;
 	hdr->inode = statbuf.st_ino;
 

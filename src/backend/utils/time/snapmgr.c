@@ -35,7 +35,7 @@
  * stack is empty.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1123,7 +1123,7 @@ AtEOXact_Snapshot(bool isCommit, bool resetXmin)
 		 * prevent a warning below.
 		 *
 		 * As with the FirstXactSnapshot, we don't need to free resources of
-		 * the snapshot itself as it will go away with the memory context.
+		 * the snapshot iself as it will go away with the memory context.
 		 */
 		foreach(lc, exportedSnapshots)
 		{
@@ -1171,7 +1171,7 @@ AtEOXact_Snapshot(bool isCommit, bool resetXmin)
 
 	/*
 	 * During normal commit processing, we call ProcArrayEndTransaction() to
-	 * reset the MyPgXact->xmin. That call happens prior to the call to
+	 * reset the PgXact->xmin. That call happens prior to the call to
 	 * AtEOXact_Snapshot(), so we need not touch xmin here at all.
 	 */
 	if (resetXmin)

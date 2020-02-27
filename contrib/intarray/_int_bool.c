@@ -3,9 +3,10 @@
  */
 #include "postgres.h"
 
-#include "_int.h"
 #include "miscadmin.h"
 #include "utils/builtins.h"
+
+#include "_int.h"
 
 PG_FUNCTION_INFO_V1(bqarr_in);
 PG_FUNCTION_INFO_V1(bqarr_out);

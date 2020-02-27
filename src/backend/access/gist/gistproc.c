@@ -7,7 +7,7 @@
  * This gives R-tree behavior, with Guttman's poly-time split algorithm.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1377,7 +1377,8 @@ gist_point_consistent(PG_FUNCTION_ARGS)
 			{
 				POLYGON    *query = PG_GETARG_POLYGON_P(1);
 
-				result = DatumGetBool(DirectFunctionCall5(gist_poly_consistent,
+				result = DatumGetBool(DirectFunctionCall5(
+														  gist_poly_consistent,
 														  PointerGetDatum(entry),
 														  PolygonPGetDatum(query),
 														  Int16GetDatum(RTOverlapStrategyNumber),
@@ -1393,7 +1394,8 @@ gist_point_consistent(PG_FUNCTION_ARGS)
 
 					Assert(box->high.x == box->low.x
 						   && box->high.y == box->low.y);
-					result = DatumGetBool(DirectFunctionCall2(poly_contain_pt,
+					result = DatumGetBool(DirectFunctionCall2(
+															  poly_contain_pt,
 															  PolygonPGetDatum(query),
 															  PointPGetDatum(&box->high)));
 					*recheck = false;
@@ -1404,7 +1406,8 @@ gist_point_consistent(PG_FUNCTION_ARGS)
 			{
 				CIRCLE	   *query = PG_GETARG_CIRCLE_P(1);
 
-				result = DatumGetBool(DirectFunctionCall5(gist_circle_consistent,
+				result = DatumGetBool(DirectFunctionCall5(
+														  gist_circle_consistent,
 														  PointerGetDatum(entry),
 														  CirclePGetDatum(query),
 														  Int16GetDatum(RTOverlapStrategyNumber),
@@ -1420,7 +1423,8 @@ gist_point_consistent(PG_FUNCTION_ARGS)
 
 					Assert(box->high.x == box->low.x
 						   && box->high.y == box->low.y);
-					result = DatumGetBool(DirectFunctionCall2(circle_contain_pt,
+					result = DatumGetBool(DirectFunctionCall2(
+															  circle_contain_pt,
 															  CirclePGetDatum(query),
 															  PointPGetDatum(&box->high)));
 					*recheck = false;
@@ -1460,11 +1464,25 @@ gist_point_distance(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8(distance);
 }
 
+/*
+ * The inexact GiST distance method for geometric types that store bounding
+ * boxes.
+ *
+ * Compute lossy distance from point to index entries.  The result is inexact
+ * because index entries are bounding boxes, not the exact shapes of the
+ * indexed geometric types.  We use distance from point to MBR of index entry.
+ * This is a lower bound estimate of distance from point to indexed geometric
+ * type.
+ */
 static float8
-gist_bbox_distance(GISTENTRY *entry, Datum query, StrategyNumber strategy)
+gist_bbox_distance(GISTENTRY *entry, Datum query,
+				   StrategyNumber strategy, bool *recheck)
 {
 	float8		distance;
 	StrategyNumber strategyGroup = strategy / GeoStrategyNumberOffset;
+
+	/* Bounding box distance is always inexact. */
+	*recheck = true;
 
 	switch (strategyGroup)
 	{
@@ -1482,32 +1500,6 @@ gist_bbox_distance(GISTENTRY *entry, Datum query, StrategyNumber strategy)
 }
 
 Datum
-gist_box_distance(PG_FUNCTION_ARGS)
-{
-	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
-	Datum		query = PG_GETARG_DATUM(1);
-	StrategyNumber strategy = (StrategyNumber) PG_GETARG_UINT16(2);
-
-	/* Oid subtype = PG_GETARG_OID(3); */
-	/* bool	   *recheck = (bool *) PG_GETARG_POINTER(4); */
-	float8		distance;
-
-	distance = gist_bbox_distance(entry, query, strategy);
-
-	PG_RETURN_FLOAT8(distance);
-}
-
-/*
- * The inexact GiST distance methods for geometric types that store bounding
- * boxes.
- *
- * Compute lossy distance from point to index entries.  The result is inexact
- * because index entries are bounding boxes, not the exact shapes of the
- * indexed geometric types.  We use distance from point to MBR of index entry.
- * This is a lower bound estimate of distance from point to indexed geometric
- * type.
- */
-Datum
 gist_circle_distance(PG_FUNCTION_ARGS)
 {
 	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
@@ -1518,8 +1510,7 @@ gist_circle_distance(PG_FUNCTION_ARGS)
 	bool	   *recheck = (bool *) PG_GETARG_POINTER(4);
 	float8		distance;
 
-	distance = gist_bbox_distance(entry, query, strategy);
-	*recheck = true;
+	distance = gist_bbox_distance(entry, query, strategy, recheck);
 
 	PG_RETURN_FLOAT8(distance);
 }
@@ -1535,8 +1526,7 @@ gist_poly_distance(PG_FUNCTION_ARGS)
 	bool	   *recheck = (bool *) PG_GETARG_POINTER(4);
 	float8		distance;
 
-	distance = gist_bbox_distance(entry, query, strategy);
-	*recheck = true;
+	distance = gist_bbox_distance(entry, query, strategy, recheck);
 
 	PG_RETURN_FLOAT8(distance);
 }

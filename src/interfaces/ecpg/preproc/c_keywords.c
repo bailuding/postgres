@@ -9,10 +9,11 @@
  */
 #include "postgres_fe.h"
 
-/* ScanKeywordList lookup data for C keywords */
-#include "c_kwlist_d.h"
 #include "preproc_extern.h"
 #include "preproc.h"
+
+/* ScanKeywordList lookup data for C keywords */
+#include "c_kwlist_d.h"
 
 /* Token codes for C keywords */
 #define PG_KEYWORD(kwname, value) value,

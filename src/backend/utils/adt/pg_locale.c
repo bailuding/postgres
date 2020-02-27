@@ -2,7 +2,7 @@
  *
  * PostgreSQL locale utilities
  *
- * Portions Copyright (c) 2002-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2002-2019, PostgreSQL Global Development Group
  *
  * src/backend/utils/adt/pg_locale.c
  *
@@ -70,10 +70,6 @@
 #include <unicode/ucnv.h>
 #endif
 
-#ifdef __GLIBC__
-#include <gnu/libc-version.h>
-#endif
-
 #ifdef WIN32
 /*
  * This Windows file defines StrNCpy. We don't need it here, so we undefine
@@ -83,7 +79,7 @@
 #undef StrNCpy
 #include <shlwapi.h>
 #ifdef StrNCpy
-#undef StrNCpy
+#undef STrNCpy
 #endif
 #endif
 
@@ -977,7 +973,7 @@ cache_locale_time(void)
 static char *
 IsoLocaleName(const char *winlocname)
 {
-#ifdef _MSC_VER
+#if (_MSC_VER >= 1400)			/* VC8.0 or later */
 	static char iso_lc_messages[32];
 	_locale_t	loct = NULL;
 
@@ -991,6 +987,7 @@ IsoLocaleName(const char *winlocname)
 	loct = _create_locale(LC_CTYPE, winlocname);
 	if (loct != NULL)
 	{
+#if (_MSC_VER >= 1700)			/* Visual Studio 2012 or later */
 		size_t		rc;
 		char	   *hyphen;
 
@@ -1017,10 +1014,28 @@ IsoLocaleName(const char *winlocname)
 		hyphen = strchr(iso_lc_messages, '-');
 		if (hyphen)
 			*hyphen = '_';
+#else
+		char		isolang[32],
+					isocrty[32];
+		LCID		lcid;
+
+		lcid = loct->locinfo->lc_handle[LC_CTYPE];
+		if (lcid == 0)
+			lcid = MAKELCID(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), SORT_DEFAULT);
+		_free_locale(loct);
+
+		if (!GetLocaleInfoA(lcid, LOCALE_SISO639LANGNAME, isolang, sizeof(isolang)))
+			return NULL;
+		if (!GetLocaleInfoA(lcid, LOCALE_SISO3166CTRYNAME, isocrty, sizeof(isocrty)))
+			return NULL;
+		snprintf(iso_lc_messages, sizeof(iso_lc_messages) - 1, "%s_%s", isolang, isocrty);
+#endif
 		return iso_lc_messages;
 	}
-#endif							/* _MSC_VER */
+	return NULL;
+#else
 	return NULL;				/* Not supported on this version of msvc/mingw */
+#endif							/* _MSC_VER >= 1400 */
 }
 #endif							/* WIN32 && LC_MESSAGES */
 
@@ -1503,7 +1518,7 @@ pg_newlocale_from_collation(Oid collid)
 char *
 get_collation_actual_version(char collprovider, const char *collcollate)
 {
-	char	   *collversion = NULL;
+	char	   *collversion;
 
 #ifdef USE_ICU
 	if (collprovider == COLLPROVIDER_ICU)
@@ -1527,13 +1542,7 @@ get_collation_actual_version(char collprovider, const char *collcollate)
 	}
 	else
 #endif
-	if (collprovider == COLLPROVIDER_LIBC)
-	{
-#if defined(__GLIBC__)
-		/* Use the glibc version because we don't have anything better. */
-		collversion = pstrdup(gnu_get_libc_version());
-#endif
-	}
+		collversion = NULL;
 
 	return collversion;
 }
@@ -1555,14 +1564,9 @@ init_icu_converter(void)
 	UConverter *conv;
 
 	if (icu_converter)
-		return;					/* already done */
+		return;
 
 	icu_encoding_name = get_encoding_name_for_icu(GetDatabaseEncoding());
-	if (!icu_encoding_name)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("encoding \"%s\" not supported by ICU",
-						pg_encoding_to_char(GetDatabaseEncoding()))));
 
 	status = U_ZERO_ERROR;
 	conv = ucnv_open(icu_encoding_name, &status);
@@ -1912,7 +1916,7 @@ char2wchar(wchar_t *to, size_t tolen, const char *from, size_t fromlen,
 		 * error message by letting pg_verifymbstr check the string.  But it's
 		 * possible that the string is OK to us, and not OK to mbstowcs ---
 		 * this suggests that the LC_CTYPE locale is different from the
-		 * database encoding.  Give a generic error message if pg_verifymbstr
+		 * database encoding.  Give a generic error message if verifymbstr
 		 * can't find anything wrong.
 		 */
 		pg_verifymbstr(from, fromlen, false);	/* might not return */

@@ -9,7 +9,7 @@
  * in cluster.c.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -42,7 +42,6 @@
 #include "nodes/makefuncs.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
-#include "postmaster/bgworker_internals.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
@@ -69,14 +68,6 @@ static MemoryContext vac_context = NULL;
 static BufferAccessStrategy vac_strategy;
 
 
-/*
- * Variables for cost-based parallel vacuum.  See comments atop
- * compute_parallel_delay to understand how it works.
- */
-pg_atomic_uint32 *VacuumSharedCostBalance = NULL;
-pg_atomic_uint32 *VacuumActiveNWorkers = NULL;
-int			VacuumCostBalanceLocal = 0;
-
 /* non-export function prototypes */
 static List *expand_vacuum_rel(VacuumRelation *vrel, int options);
 static List *get_all_vacuum_rels(int options);
@@ -85,7 +76,6 @@ static void vac_truncate_clog(TransactionId frozenXID,
 							  TransactionId lastSaneFrozenXid,
 							  MultiXactId lastSaneMinMulti);
 static bool vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params);
-static double compute_parallel_delay(void);
 static VacOptTernaryValue get_vacopt_ternary_value(DefElem *def);
 
 /*
@@ -104,15 +94,11 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 	bool		freeze = false;
 	bool		full = false;
 	bool		disable_page_skipping = false;
-	bool		parallel_option = false;
 	ListCell   *lc;
 
 	/* Set default value */
 	params.index_cleanup = VACOPT_TERNARY_DEFAULT;
 	params.truncate = VACOPT_TERNARY_DEFAULT;
-
-	/* By default parallel vacuum is enabled */
-	params.nworkers = 0;
 
 	/* Parse options list */
 	foreach(lc, vacstmt->options)
@@ -143,39 +129,6 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 			params.index_cleanup = get_vacopt_ternary_value(opt);
 		else if (strcmp(opt->defname, "truncate") == 0)
 			params.truncate = get_vacopt_ternary_value(opt);
-		else if (strcmp(opt->defname, "parallel") == 0)
-		{
-			parallel_option = true;
-			if (opt->arg == NULL)
-			{
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("parallel option requires a value between 0 and %d",
-								MAX_PARALLEL_WORKER_LIMIT),
-						 parser_errposition(pstate, opt->location)));
-			}
-			else
-			{
-				int			nworkers;
-
-				nworkers = defGetInt32(opt);
-				if (nworkers < 0 || nworkers > MAX_PARALLEL_WORKER_LIMIT)
-					ereport(ERROR,
-							(errcode(ERRCODE_SYNTAX_ERROR),
-							 errmsg("parallel vacuum degree must be between 0 and %d",
-									MAX_PARALLEL_WORKER_LIMIT),
-							 parser_errposition(pstate, opt->location)));
-
-				/*
-				 * Disable parallel vacuum, if user has specified parallel
-				 * degree as zero.
-				 */
-				if (nworkers == 0)
-					params.nworkers = -1;
-				else
-					params.nworkers = nworkers;
-			}
-		}
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
@@ -198,11 +151,6 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 	Assert((params.options & VACOPT_VACUUM) ||
 		   !(params.options & (VACOPT_FULL | VACOPT_FREEZE)));
 	Assert(!(params.options & VACOPT_SKIPTOAST));
-
-	if ((params.options & VACOPT_FULL) && parallel_option)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("cannot specify both FULL and PARALLEL options")));
 
 	/*
 	 * Make sure VACOPT_ANALYZE is specified if any column lists are present.
@@ -435,9 +383,6 @@ vacuum(List *relations, VacuumParams *params,
 		VacuumPageHit = 0;
 		VacuumPageMiss = 0;
 		VacuumPageDirty = 0;
-		VacuumCostBalanceLocal = 0;
-		VacuumSharedCostBalance = NULL;
-		VacuumActiveNWorkers = NULL;
 
 		/*
 		 * Loop to process each selected relation.
@@ -485,12 +430,16 @@ vacuum(List *relations, VacuumParams *params,
 			}
 		}
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		in_vacuum = false;
 		VacuumCostActive = false;
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	in_vacuum = false;
+	VacuumCostActive = false;
 
 	/*
 	 * Finish up processing.
@@ -907,14 +856,14 @@ get_all_vacuum_rels(int options)
 }
 
 /*
- * vacuum_set_xid_limits() -- compute oldestXmin and freeze cutoff points
+ * vacuum_set_xid_limits() -- compute oldest-Xmin and freeze cutoff points
  *
  * The output parameters are:
  * - oldestXmin is the cutoff value used to distinguish whether tuples are
  *	 DEAD or RECENTLY_DEAD (see HeapTupleSatisfiesVacuum).
  * - freezeLimit is the Xid below which all Xids are replaced by
  *	 FrozenTransactionId during vacuum.
- * - xidFullScanLimit (computed from freeze_table_age parameter)
+ * - xidFullScanLimit (computed from table_freeze_age parameter)
  *	 represents a minimum Xid value; a table whose relfrozenxid is older than
  *	 this will have a full-table vacuum applied to it, to freeze tuples across
  *	 the whole table.  Vacuuming a table younger than this value can use a
@@ -1996,26 +1945,16 @@ vac_close_indexes(int nindexes, Relation *Irel, LOCKMODE lockmode)
 void
 vacuum_delay_point(void)
 {
-	double		msec = 0;
-
 	/* Always check for interrupts */
 	CHECK_FOR_INTERRUPTS();
 
-	if (!VacuumCostActive || InterruptPending)
-		return;
-
-	/*
-	 * For parallel vacuum, the delay is computed based on the shared cost
-	 * balance.  See compute_parallel_delay.
-	 */
-	if (VacuumSharedCostBalance != NULL)
-		msec = compute_parallel_delay();
-	else if (VacuumCostBalance >= VacuumCostLimit)
-		msec = VacuumCostDelay * VacuumCostBalance / VacuumCostLimit;
-
 	/* Nap if appropriate */
-	if (msec > 0)
+	if (VacuumCostActive && !InterruptPending &&
+		VacuumCostBalance >= VacuumCostLimit)
 	{
+		double		msec;
+
+		msec = VacuumCostDelay * VacuumCostBalance / VacuumCostLimit;
 		if (msec > VacuumCostDelay * 4)
 			msec = VacuumCostDelay * 4;
 
@@ -2029,66 +1968,6 @@ vacuum_delay_point(void)
 		/* Might have gotten an interrupt while sleeping */
 		CHECK_FOR_INTERRUPTS();
 	}
-}
-
-/*
- * Computes the vacuum delay for parallel workers.
- *
- * The basic idea of a cost-based vacuum delay for parallel vacuum is to allow
- * each worker to sleep proportional to the work done by it.  We achieve this
- * by allowing all parallel vacuum workers including the leader process to
- * have a shared view of cost related parameters (mainly VacuumCostBalance).
- * We allow each worker to update it as and when it has incurred any cost and
- * then based on that decide whether it needs to sleep.  We compute the time
- * to sleep for a worker based on the cost it has incurred
- * (VacuumCostBalanceLocal) and then reduce the VacuumSharedCostBalance by
- * that amount.  This avoids letting the workers sleep who have done less or
- * no I/O as compared to other workers and therefore can ensure that workers
- * who are doing more I/O got throttled more.
- *
- * We allow any worker to sleep only if it has performed the I/O above a
- * certain threshold, which is calculated based on the number of active
- * workers (VacuumActiveNWorkers), and the overall cost balance is more than
- * VacuumCostLimit set by the system.  The testing reveals that we achieve
- * the required throttling if we allow a worker that has done more than 50%
- * of its share of work to sleep.
- */
-static double
-compute_parallel_delay(void)
-{
-	double		msec = 0;
-	uint32		shared_balance;
-	int			nworkers;
-
-	/* Parallel vacuum must be active */
-	Assert(VacuumSharedCostBalance);
-
-	nworkers = pg_atomic_read_u32(VacuumActiveNWorkers);
-
-	/* At least count itself */
-	Assert(nworkers >= 1);
-
-	/* Update the shared cost balance value atomically */
-	shared_balance = pg_atomic_add_fetch_u32(VacuumSharedCostBalance, VacuumCostBalance);
-
-	/* Compute the total local balance for the current worker */
-	VacuumCostBalanceLocal += VacuumCostBalance;
-
-	if ((shared_balance >= VacuumCostLimit) &&
-		(VacuumCostBalanceLocal > 0.5 * (VacuumCostLimit / nworkers)))
-	{
-		/* Compute sleep time based on the local cost balance */
-		msec = VacuumCostDelay * VacuumCostBalanceLocal / VacuumCostLimit;
-		pg_atomic_sub_fetch_u32(VacuumSharedCostBalance, VacuumCostBalanceLocal);
-		VacuumCostBalanceLocal = 0;
-	}
-
-	/*
-	 * Reset the local balance as we accumulated it into the shared value.
-	 */
-	VacuumCostBalance = 0;
-
-	return msec;
 }
 
 /*

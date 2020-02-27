@@ -4,7 +4,7 @@
  *	  interface routines for the postgres GiST index access method.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -17,15 +17,15 @@
 #include "access/gist_private.h"
 #include "access/gistscan.h"
 #include "catalog/pg_collation.h"
-#include "commands/vacuum.h"
 #include "miscadmin.h"
-#include "nodes/execnodes.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "nodes/execnodes.h"
 #include "utils/builtins.h"
 #include "utils/index_selfuncs.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
 
 /* non-export function prototypes */
 static void gistfixsplit(GISTInsertState *state, GISTSTATE *giststate);
@@ -37,7 +37,7 @@ static bool gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 							 Buffer leftchild, Buffer rightchild,
 							 bool unlockbuf, bool unlockleftchild);
 static void gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
-							GISTSTATE *giststate, List *splitinfo, bool unlockbuf);
+							GISTSTATE *giststate, List *splitinfo, bool releasebuf);
 static void gistprunepage(Relation rel, Page page, Buffer buffer,
 						  Relation heapRel);
 
@@ -75,9 +75,6 @@ gisthandler(PG_FUNCTION_ARGS)
 	amroutine->ampredlocks = true;
 	amroutine->amcanparallel = false;
 	amroutine->amcaninclude = true;
-	amroutine->amusemaintenanceworkmem = false;
-	amroutine->amparallelvacuumoptions =
-		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_COND_CLEANUP;
 	amroutine->amkeytype = InvalidOid;
 
 	amroutine->ambuild = gistbuild;
@@ -822,7 +819,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 			/*
 			 * Leaf page. Insert the new key. We've already updated all the
 			 * parents on the way down, but we might have to split the page if
-			 * it doesn't fit. gistinserttuple() will take care of that.
+			 * it doesn't fit. gistinserthere() will take care of that.
 			 */
 
 			/*
@@ -1050,7 +1047,7 @@ gistFindCorrectParent(Relation r, GISTInsertStack *child)
 			{
 				/*
 				 * End of chain and still didn't find parent. It's a very-very
-				 * rare situation when root splitted.
+				 * rare situation when root splited.
 				 */
 				break;
 			}
@@ -1092,6 +1089,8 @@ gistFindCorrectParent(Relation r, GISTInsertStack *child)
 		LockBuffer(child->parent->buffer, GIST_EXCLUSIVE);
 		gistFindCorrectParent(r, child);
 	}
+
+	return;
 }
 
 /*
@@ -1264,7 +1263,7 @@ gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
 	 * Check for any rw conflicts (in serializable isolation level) just
 	 * before we intend to modify the page
 	 */
-	CheckForSerializableConflictIn(state->r, NULL, BufferGetBlockNumber(stack->buffer));
+	CheckForSerializableConflictIn(state->r, NULL, stack->buffer);
 
 	/* Insert the tuple(s) to the page, splitting the page if necessary */
 	is_split = gistplacetopage(state->r, state->freespace, giststate,
@@ -1314,6 +1313,8 @@ static void
 gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 				GISTSTATE *giststate, List *splitinfo, bool unlockbuf)
 {
+	ListCell   *lc;
+	List	   *reversed;
 	GISTPageSplitInfo *right;
 	GISTPageSplitInfo *left;
 	IndexTuple	tuples[2];
@@ -1328,34 +1329,43 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 	 * left. Finally insert the downlink for the last new page and update the
 	 * downlink for the original page as one operation.
 	 */
+
+	/* for convenience, create a copy of the list in reverse order */
+	reversed = NIL;
+	foreach(lc, splitinfo)
+	{
+		reversed = lcons(lfirst(lc), reversed);
+	}
+
 	LockBuffer(stack->parent->buffer, GIST_EXCLUSIVE);
+	gistFindCorrectParent(state->r, stack);
 
 	/*
-	 * Insert downlinks for the siblings from right to left, until there are
+	 * insert downlinks for the siblings from right to left, until there are
 	 * only two siblings left.
 	 */
-	for (int pos = list_length(splitinfo) - 1; pos > 1; pos--)
+	while (list_length(reversed) > 2)
 	{
-		right = (GISTPageSplitInfo *) list_nth(splitinfo, pos);
-		left = (GISTPageSplitInfo *) list_nth(splitinfo, pos - 1);
+		right = (GISTPageSplitInfo *) linitial(reversed);
+		left = (GISTPageSplitInfo *) lsecond(reversed);
 
-		gistFindCorrectParent(state->r, stack);
 		if (gistinserttuples(state, stack->parent, giststate,
 							 &right->downlink, 1,
 							 InvalidOffsetNumber,
 							 left->buf, right->buf, false, false))
 		{
 			/*
-			 * If the parent page was split, the existing downlink might
-			 * have moved.
+			 * If the parent page was split, need to relocate the original
+			 * parent pointer.
 			 */
-			stack->downlinkoffnum = InvalidOffsetNumber;
+			gistFindCorrectParent(state->r, stack);
 		}
 		/* gistinserttuples() released the lock on right->buf. */
+		reversed = list_delete_first(reversed);
 	}
 
-	right = (GISTPageSplitInfo *) lsecond(splitinfo);
-	left = (GISTPageSplitInfo *) linitial(splitinfo);
+	right = (GISTPageSplitInfo *) linitial(reversed);
+	left = (GISTPageSplitInfo *) lsecond(reversed);
 
 	/*
 	 * Finally insert downlink for the remaining right page and update the
@@ -1364,21 +1374,13 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 	 */
 	tuples[0] = left->downlink;
 	tuples[1] = right->downlink;
-	gistFindCorrectParent(state->r, stack);
-	if (gistinserttuples(state, stack->parent, giststate,
-						 tuples, 2,
-						 stack->downlinkoffnum,
-						 left->buf, right->buf,
-						 true,		/* Unlock parent */
-						 unlockbuf	/* Unlock stack->buffer if caller wants that */
-			))
-	{
-		/*
-		 * If the parent page was split, the downlink might have moved.
-		 */
-		stack->downlinkoffnum = InvalidOffsetNumber;
-	}
-
+	gistinserttuples(state, stack->parent, giststate,
+					 tuples, 2,
+					 stack->downlinkoffnum,
+					 left->buf, right->buf,
+					 true,		/* Unlock parent */
+					 unlockbuf	/* Unlock stack->buffer if caller wants that */
+		);
 	Assert(left->buf == stack->buffer);
 
 	/*

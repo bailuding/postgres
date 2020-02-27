@@ -27,7 +27,6 @@ SELECT 'tricky' AS U&"\" UESCAPE '!';
 
 SELECT U&'wrong: \061';
 SELECT U&'wrong: \+0061';
-SELECT U&'wrong: +0061' UESCAPE +;
 SELECT U&'wrong: +0061' UESCAPE '+';
 
 SET standard_conforming_strings TO off;
@@ -145,20 +144,7 @@ SELECT SUBSTRING('abcdefg' FROM 'c.e') AS "cde";
 -- With a parenthesized subexpression, return only what matches the subexpr
 SELECT SUBSTRING('abcdefg' FROM 'b(.*)f') AS "cde";
 
--- Check behavior of SIMILAR TO, which uses largely the same regexp variant
-SELECT 'abcdefg' SIMILAR TO '_bcd%' AS true;
-SELECT 'abcdefg' SIMILAR TO 'bcd%' AS false;
-SELECT 'abcdefg' SIMILAR TO '_bcd#%' ESCAPE '#' AS false;
-SELECT 'abcd%' SIMILAR TO '_bcd#%' ESCAPE '#' AS true;
--- Postgres uses '\' as the default escape character, which is not per spec
-SELECT 'abcdefg' SIMILAR TO '_bcd\%' AS false;
--- and an empty string to mean "no escape", which is also not per spec
-SELECT 'abcd\efg' SIMILAR TO '_bcd\%' ESCAPE '' AS true;
--- these behaviors are per spec, though:
-SELECT 'abcdefg' SIMILAR TO '_bcd%' ESCAPE NULL AS null;
-SELECT 'abcdefg' SIMILAR TO '_bcd#%' ESCAPE '##' AS error;
-
--- Test back reference in regexp_replace
+-- PostgreSQL extension to allow using back reference in replace string;
 SELECT regexp_replace('1112223333', E'(\\d{3})(\\d{3})(\\d{4})', E'(\\1) \\2-\\3');
 SELECT regexp_replace('AAA   BBB   CCC   ', E'\\s+', ' ', 'g');
 SELECT regexp_replace('AAA', '^|$', 'Z', 'g');

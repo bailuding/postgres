@@ -3,7 +3,7 @@
  * parsexlog.c
  *	  Functions for reading Write-Ahead-Log
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *-------------------------------------------------------------------------
@@ -13,14 +13,16 @@
 
 #include <unistd.h>
 
+#include "pg_rewind.h"
+#include "filemap.h"
+
 #include "access/rmgr.h"
 #include "access/xlog_internal.h"
 #include "access/xlogreader.h"
 #include "catalog/pg_control.h"
 #include "catalog/storage_xlog.h"
 #include "commands/dbcommands_xlog.h"
-#include "filemap.h"
-#include "pg_rewind.h"
+
 
 /*
  * RmgrNames is an array of resource manager names, to make error messages
@@ -41,12 +43,14 @@ static char xlogfpath[MAXPGPATH];
 
 typedef struct XLogPageReadPrivate
 {
+	const char *datadir;
 	int			tliIndex;
 } XLogPageReadPrivate;
 
 static int	SimpleXLogPageRead(XLogReaderState *xlogreader,
 							   XLogRecPtr targetPagePtr,
-							   int reqLen, XLogRecPtr targetRecPtr, char *readBuf);
+							   int reqLen, XLogRecPtr targetRecPtr, char *readBuf,
+							   TimeLineID *pageTLI);
 
 /*
  * Read WAL from the datadir/pg_wal, starting from 'startpoint' on timeline
@@ -62,20 +66,22 @@ extractPageMap(const char *datadir, XLogRecPtr startpoint, int tliIndex,
 	char	   *errormsg;
 	XLogPageReadPrivate private;
 
+	private.datadir = datadir;
 	private.tliIndex = tliIndex;
-	xlogreader = XLogReaderAllocate(WalSegSz, datadir, &SimpleXLogPageRead,
+	xlogreader = XLogReaderAllocate(WalSegSz, &SimpleXLogPageRead,
 									&private);
 	if (xlogreader == NULL)
 		pg_fatal("out of memory");
 
-	XLogBeginRead(xlogreader, startpoint);
 	do
 	{
-		record = XLogReadRecord(xlogreader, &errormsg);
+		record = XLogReadRecord(xlogreader, startpoint, &errormsg);
 
 		if (record == NULL)
 		{
-			XLogRecPtr	errptr = xlogreader->EndRecPtr;
+			XLogRecPtr	errptr;
+
+			errptr = startpoint ? startpoint : xlogreader->EndRecPtr;
 
 			if (errormsg)
 				pg_fatal("could not read WAL record at %X/%X: %s",
@@ -87,6 +93,8 @@ extractPageMap(const char *datadir, XLogRecPtr startpoint, int tliIndex,
 		}
 
 		extractPageInfo(xlogreader);
+
+		startpoint = InvalidXLogRecPtr; /* continue reading at next record */
 
 	} while (xlogreader->ReadRecPtr != endpoint);
 
@@ -111,14 +119,14 @@ readOneRecord(const char *datadir, XLogRecPtr ptr, int tliIndex)
 	XLogPageReadPrivate private;
 	XLogRecPtr	endptr;
 
+	private.datadir = datadir;
 	private.tliIndex = tliIndex;
-	xlogreader = XLogReaderAllocate(WalSegSz, datadir, &SimpleXLogPageRead,
+	xlogreader = XLogReaderAllocate(WalSegSz, &SimpleXLogPageRead,
 									&private);
 	if (xlogreader == NULL)
 		pg_fatal("out of memory");
 
-	XLogBeginRead(xlogreader, ptr);
-	record = XLogReadRecord(xlogreader, &errormsg);
+	record = XLogReadRecord(xlogreader, ptr, &errormsg);
 	if (record == NULL)
 	{
 		if (errormsg)
@@ -169,8 +177,9 @@ findLastCheckpoint(const char *datadir, XLogRecPtr forkptr, int tliIndex,
 			forkptr += SizeOfXLogShortPHD;
 	}
 
+	private.datadir = datadir;
 	private.tliIndex = tliIndex;
-	xlogreader = XLogReaderAllocate(WalSegSz, datadir, &SimpleXLogPageRead,
+	xlogreader = XLogReaderAllocate(WalSegSz, &SimpleXLogPageRead,
 									&private);
 	if (xlogreader == NULL)
 		pg_fatal("out of memory");
@@ -180,8 +189,7 @@ findLastCheckpoint(const char *datadir, XLogRecPtr forkptr, int tliIndex,
 	{
 		uint8		info;
 
-		XLogBeginRead(xlogreader, searchptr);
-		record = XLogReadRecord(xlogreader, &errormsg);
+		record = XLogReadRecord(xlogreader, searchptr, &errormsg);
 
 		if (record == NULL)
 		{
@@ -226,10 +234,11 @@ findLastCheckpoint(const char *datadir, XLogRecPtr forkptr, int tliIndex,
 	}
 }
 
-/* XLogReader callback function, to read a WAL page */
+/* XLogreader callback function, to read a WAL page */
 static int
 SimpleXLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
-				   int reqLen, XLogRecPtr targetRecPtr, char *readBuf)
+				   int reqLen, XLogRecPtr targetRecPtr, char *readBuf,
+				   TimeLineID *pageTLI)
 {
 	XLogPageReadPrivate *private = (XLogPageReadPrivate *) xlogreader->private_data;
 	uint32		targetPageOff;
@@ -274,8 +283,7 @@ SimpleXLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
 		XLogFileName(xlogfname, targetHistory[private->tliIndex].tli,
 					 xlogreadsegno, WalSegSz);
 
-		snprintf(xlogfpath, MAXPGPATH, "%s/" XLOGDIR "/%s",
-				 xlogreader->segcxt.ws_dir, xlogfname);
+		snprintf(xlogfpath, MAXPGPATH, "%s/" XLOGDIR "/%s", private->datadir, xlogfname);
 
 		xlogreadfd = open(xlogfpath, O_RDONLY | PG_BINARY, 0);
 
@@ -313,7 +321,7 @@ SimpleXLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
 
 	Assert(targetSegNo == xlogreadsegno);
 
-	xlogreader->seg.ws_tli = targetHistory[private->tliIndex].tli;
+	*pageTLI = targetHistory[private->tliIndex].tli;
 	return XLOG_BLCKSZ;
 }
 

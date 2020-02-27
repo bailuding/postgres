@@ -3,12 +3,12 @@
 #ifndef _ECPG_ECPGLIB_EXTERN_H
 #define _ECPG_ECPGLIB_EXTERN_H
 
-#include "ecpg_config.h"
-#include "ecpgtype.h"
 #include "libpq-fe.h"
 #include "sqlca.h"
-#include "sqlda-compat.h"
 #include "sqlda-native.h"
+#include "sqlda-compat.h"
+#include "ecpg_config.h"
+#include "ecpgtype.h"
 
 #ifndef CHAR_BIT
 #include <limits.h>
@@ -179,7 +179,10 @@ char	   *ecpg_strdup(const char *, int);
 const char *ecpg_type_name(enum ECPGttype);
 int			ecpg_dynamic_type(Oid);
 int			sqlda_dynamic_type(Oid, enum COMPAT_MODE);
+void		ecpg_free_auto_mem(void);
 void		ecpg_clear_auto_mem(void);
+
+struct descriptor *ecpggetdescp(int, char *);
 
 struct descriptor *ecpg_find_desc(int line, const char *name);
 

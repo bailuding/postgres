@@ -5,7 +5,7 @@
  *
  * See src/backend/access/transam/README for more information.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -40,7 +40,6 @@
 #include "libpq/be-fsstubs.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
-#include "pg_trace.h"
 #include "pgstat.h"
 #include "replication/logical.h"
 #include "replication/logicallauncher.h"
@@ -66,6 +65,8 @@
 #include "utils/snapmgr.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
+#include "pg_trace.h"
+
 
 /*
  *	User-tweakable parameters
@@ -91,8 +92,8 @@ int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
  * in the user backend, so we need some additional bookkeeping.
  *
  * XactTopFullTransactionId stores the XID of our toplevel transaction, which
- * will be the same as TopTransactionStateData.fullTransactionId in an
- * ordinary backend; but in a parallel backend, which does not have the entire
+ * will be the same as TopTransactionState.fullTransactionId in an ordinary
+ * backend; but in a parallel backend, which does not have the entire
  * transaction state, it will instead be copied from the backend that started
  * the parallel operation.
  *
@@ -870,9 +871,6 @@ TransactionIdIsCurrentTransactionId(TransactionId xid)
 	if (!TransactionIdIsNormal(xid))
 		return false;
 
-	if (TransactionIdEquals(xid, GetTopTransactionIdIfAny()))
-		return true;
-
 	/*
 	 * In parallel workers, the XIDs we must consider as current are stored in
 	 * ParallelCurrentXids rather than the transaction-state stack.  Note that
@@ -1234,7 +1232,7 @@ RecordTransactionCommit(void)
 	if (!markXidCommitted)
 	{
 		/*
-		 * We expect that every RelationDropStorage is followed by a catalog
+		 * We expect that every smgrscheduleunlink is followed by a catalog
 		 * update, and hence XID assignment, so we shouldn't get here with any
 		 * pending deletes.  Use a real test not just an Assert to check this,
 		 * since it's a bit fragile.
@@ -1990,7 +1988,7 @@ StartTransaction(void)
 
 	/*
 	 * Advertise it in the proc array.  We assume assignment of
-	 * localTransactionId is atomic, and the backendId should be set already.
+	 * LocalTransactionID is atomic, and the backendId should be set already.
 	 */
 	Assert(MyProc->backendId == vxid.backendId);
 	MyProc->lxid = vxid.localTransactionId;
@@ -2113,14 +2111,6 @@ CommitTransaction(void)
 	AtEOXact_LargeObject(true);
 
 	/*
-	 * Insert notifications sent by NOTIFY commands into the queue.  This
-	 * should be late in the pre-commit sequence to minimize time spent
-	 * holding the notify-insertion lock.  However, this could result in
-	 * creating a snapshot, so we must do it before serializable cleanup.
-	 */
-	PreCommit_Notify();
-
-	/*
 	 * Mark serializable transaction as complete for predicate locking
 	 * purposes.  This should be done as late as we can put it and still allow
 	 * errors to be raised for failure patterns found at commit.  This is not
@@ -2129,6 +2119,13 @@ CommitTransaction(void)
 	 */
 	if (!is_parallel_worker)
 		PreCommit_CheckForSerializationFailure();
+
+	/*
+	 * Insert notifications sent by NOTIFY commands into the queue.  This
+	 * should be late in the pre-commit sequence to minimize time spent
+	 * holding the notify-insertion lock.
+	 */
+	PreCommit_Notify();
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
@@ -2345,14 +2342,14 @@ PrepareTransaction(void)
 	/* close large objects before lower-level cleanup */
 	AtEOXact_LargeObject(true);
 
-	/* NOTIFY requires no work at this point */
-
 	/*
 	 * Mark serializable transaction as complete for predicate locking
 	 * purposes.  This should be done as late as we can put it and still allow
 	 * errors to be raised for failure patterns found at commit.
 	 */
 	PreCommit_CheckForSerializationFailure();
+
+	/* NOTIFY will be handled below */
 
 	/*
 	 * Don't allow PREPARE TRANSACTION if we've accessed a temporary table in
@@ -3428,6 +3425,7 @@ CheckTransactionBlock(bool isTopLevel, bool throwError, const char *stmtType)
 	/* translator: %s represents an SQL statement name */
 			 errmsg("%s can only be used in transaction blocks",
 					stmtType)));
+	return;
 }
 
 /*
@@ -4745,6 +4743,7 @@ StartSubTransaction(void)
 	 */
 	AtSubStart_Memory();
 	AtSubStart_ResourceOwner();
+	AtSubStart_Notify();
 	AfterTriggerBeginSubXact();
 
 	s->state = TRANS_INPROGRESS;
@@ -5779,19 +5778,22 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 		 * bits set on changes made by transactions that haven't yet
 		 * recovered. It's unlikely but it's good to be safe.
 		 */
-		TransactionIdAsyncCommitTree(xid, parsed->nsubxacts, parsed->subxacts, lsn);
+		TransactionIdAsyncCommitTree(
+									 xid, parsed->nsubxacts, parsed->subxacts, lsn);
 
 		/*
 		 * We must mark clog before we update the ProcArray.
 		 */
-		ExpireTreeKnownAssignedTransactionIds(xid, parsed->nsubxacts, parsed->subxacts, max_xid);
+		ExpireTreeKnownAssignedTransactionIds(
+											  xid, parsed->nsubxacts, parsed->subxacts, max_xid);
 
 		/*
 		 * Send any cache invalidations attached to the commit. We must
 		 * maintain the same order of invalidation then release locks as
 		 * occurs in CommitTransaction().
 		 */
-		ProcessCommittedInvalidationMessages(parsed->msgs, parsed->nmsgs,
+		ProcessCommittedInvalidationMessages(
+											 parsed->msgs, parsed->nmsgs,
 											 XactCompletionRelcacheInitFileInval(parsed->xinfo),
 											 parsed->dbId, parsed->tsId);
 
@@ -5905,7 +5907,8 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid)
 		/*
 		 * We must update the ProcArray after we have marked clog.
 		 */
-		ExpireTreeKnownAssignedTransactionIds(xid, parsed->nsubxacts, parsed->subxacts, max_xid);
+		ExpireTreeKnownAssignedTransactionIds(
+											  xid, parsed->nsubxacts, parsed->subxacts, max_xid);
 
 		/*
 		 * There are no invalidation messages to send or undo.

@@ -592,6 +592,7 @@ call_pltcl_start_proc(Oid prolang, bool pltrusted)
 	const char *gucname;
 	ErrorContextCallback errcallback;
 	List	   *namelist;
+	Oid			fargtypes[1];	/* dummy */
 	Oid			procOid;
 	HeapTuple	procTup;
 	Form_pg_proc procStruct;
@@ -615,7 +616,7 @@ call_pltcl_start_proc(Oid prolang, bool pltrusted)
 
 	/* Parse possibly-qualified identifier and look up the function */
 	namelist = stringToQualifiedNameList(start_proc);
-	procOid = LookupFuncName(namelist, 0, NULL, false);
+	procOid = LookupFuncName(namelist, 0, fargtypes, false);
 
 	/* Current user must have permission to call function */
 	aclresult = pg_proc_aclcheck(procOid, GetUserId(), ACL_EXECUTE);
@@ -717,7 +718,7 @@ pltclu_call_handler(PG_FUNCTION_ARGS)
 static Datum
 pltcl_handler(PG_FUNCTION_ARGS, bool pltrusted)
 {
-	Datum		retval = (Datum) 0;
+	Datum		retval;
 	pltcl_call_state current_call_state;
 	pltcl_call_state *save_call_state;
 
@@ -764,10 +765,9 @@ pltcl_handler(PG_FUNCTION_ARGS, bool pltrusted)
 			retval = pltcl_func_handler(fcinfo, &current_call_state, pltrusted);
 		}
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		/* Restore static pointer, then clean up the prodesc refcount if any */
-		/* (We're being paranoid in case an error is thrown in context deletion) */
 		pltcl_current_call_state = save_call_state;
 		if (current_call_state.prodesc != NULL)
 		{
@@ -775,8 +775,19 @@ pltcl_handler(PG_FUNCTION_ARGS, bool pltrusted)
 			if (--current_call_state.prodesc->fn_refcount == 0)
 				MemoryContextDelete(current_call_state.prodesc->fn_cxt);
 		}
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	/* Restore static pointer, then clean up the prodesc refcount if any */
+	/* (We're being paranoid in case an error is thrown in context deletion) */
+	pltcl_current_call_state = save_call_state;
+	if (current_call_state.prodesc != NULL)
+	{
+		Assert(current_call_state.prodesc->fn_refcount > 0);
+		if (--current_call_state.prodesc->fn_refcount == 0)
+			MemoryContextDelete(current_call_state.prodesc->fn_cxt);
+	}
 
 	return retval;
 }
@@ -1623,7 +1634,7 @@ compile_pltcl_function(Oid fn_oid, Oid tgreloid,
 
 		/************************************************************
 		 * prefix procedure body with
-		 * upvar #0 <internal_proname> GD
+		 * upvar #0 <internal_procname> GD
 		 * and with appropriate setting of arguments
 		 ************************************************************/
 		Tcl_DStringAppend(&proc_internal_body, "upvar #0 ", -1);
@@ -2746,7 +2757,8 @@ pltcl_SPI_execute_plan(ClientData cdata, Tcl_Interp *interp,
 		if (strlen(nulls) != qdesc->nargs)
 		{
 			Tcl_SetObjResult(interp,
-							 Tcl_NewStringObj("length of nulls string doesn't match number of arguments",
+							 Tcl_NewStringObj(
+											  "length of nulls string doesn't match number of arguments",
 											  -1));
 			return TCL_ERROR;
 		}
@@ -2761,8 +2773,9 @@ pltcl_SPI_execute_plan(ClientData cdata, Tcl_Interp *interp,
 		if (i >= objc)
 		{
 			Tcl_SetObjResult(interp,
-							 Tcl_NewStringObj("argument list length doesn't match number of arguments for query",
-											  -1));
+							 Tcl_NewStringObj(
+											  "argument list length doesn't match number of arguments for query"
+											  ,-1));
 			return TCL_ERROR;
 		}
 
@@ -3014,7 +3027,7 @@ pltcl_set_tuple_values(Tcl_Interp *interp, const char *arrayname,
 	const char *nullname = NULL;
 
 	/************************************************************
-	 * Prepare pointers for Tcl_SetVar2Ex() below
+	 * Prepare pointers for Tcl_SetVar2() below
 	 ************************************************************/
 	if (arrayname == NULL)
 	{

@@ -3,7 +3,7 @@
  * partbounds.c
  *		Support routines for manipulating partition bounds
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -35,8 +35,9 @@
 #include "utils/hashutils.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
-#include "utils/ruleutils.h"
+#include "utils/rel.h"
 #include "utils/snapmgr.h"
+#include "utils/ruleutils.h"
 #include "utils/syscache.h"
 
 /*
@@ -774,11 +775,6 @@ partition_bounds_equal(int partnatts, int16 *parttyplen, bool *parttypbyval,
 /*
  * Return a copy of given PartitionBoundInfo structure. The data types of bounds
  * are described by given partition key specification.
- *
- * Note: it's important that this function and its callees not do any catalog
- * access, nor anything else that would result in allocating memory other than
- * the returned data structure.  Since this is called in a long-lived context,
- * that would result in unwanted memory leaks.
  */
 PartitionBoundInfo
 partition_bounds_copy(PartitionBoundInfo src,
@@ -789,8 +785,6 @@ partition_bounds_copy(PartitionBoundInfo src,
 	int			ndatums;
 	int			partnatts;
 	int			num_indexes;
-	bool		hash_part;
-	int			natts;
 
 	dest = (PartitionBoundInfo) palloc(sizeof(PartitionBoundInfoData));
 
@@ -821,16 +815,16 @@ partition_bounds_copy(PartitionBoundInfo src,
 	else
 		dest->kind = NULL;
 
-	/*
-	 * For hash partitioning, datums array will have two elements - modulus and
-	 * remainder.
-	 */
-	hash_part = (key->strategy == PARTITION_STRATEGY_HASH);
-	natts = hash_part ? 2 : partnatts;
-
 	for (i = 0; i < ndatums; i++)
 	{
 		int			j;
+
+		/*
+		 * For a corresponding to hash partition, datums array will have two
+		 * elements - modulus and remainder.
+		 */
+		bool		hash_part = (key->strategy == PARTITION_STRATEGY_HASH);
+		int			natts = hash_part ? 2 : partnatts;
 
 		dest->datums[i] = (Datum *) palloc(sizeof(Datum) * natts);
 
@@ -1249,7 +1243,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 	 */
 	def_part_constraints =
 		map_partition_varattnos(def_part_constraints, 1, default_rel,
-								parent);
+								parent, NULL);
 
 	/*
 	 * If the existing constraints on the default partition imply that it will
@@ -1299,7 +1293,7 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 			partition_constraint = make_ands_explicit(def_part_constraints);
 			partition_constraint = (Expr *)
 				map_partition_varattnos((List *) partition_constraint, 1,
-										part_rel, default_rel);
+										part_rel, default_rel, NULL);
 
 			/*
 			 * If the partition constraints on default partition child imply
@@ -1519,7 +1513,7 @@ partition_rbound_cmp(int partnatts, FmgrInfo *partsupfunc,
 /*
  * partition_rbound_datum_cmp
  *
- * Return whether range bound (specified in rb_datums and rb_kind)
+ * Return whether range bound (specified in rb_datums, rb_kind, and rb_lower)
  * is <, =, or > partition key of tuple (tuple_datums)
  *
  * n_tuple_datums, partsupfunc and partcollation give number of attributes in
@@ -2051,7 +2045,7 @@ get_qual_for_hash(Relation parent, PartitionBoundSpec *spec)
 		else
 		{
 			keyCol = (Node *) copyObject(lfirst(partexprs_item));
-			partexprs_item = lnext(key->partexprs, partexprs_item);
+			partexprs_item = lnext(partexprs_item);
 		}
 
 		args = lappend(args, keyCol);
@@ -2267,7 +2261,7 @@ get_qual_for_list(Relation parent, PartitionBoundSpec *spec)
  *		AND
  *	(b > bl OR (b = bl AND c >= cl))
  *		AND
- *	(b < bu OR (b = bu AND c < cu))
+ *	(b < bu) OR (b = bu AND c < cu))
  *
  * If a bound datum is either MINVALUE or MAXVALUE, these expressions are
  * simplified using the fact that any value is greater than MINVALUE and less
@@ -2496,20 +2490,19 @@ get_qual_for_range(Relation parent, PartitionBoundSpec *spec,
 		j = i;
 		partexprs_item = partexprs_item_saved;
 
-		for_both_cell(cell1, spec->lowerdatums, lower_or_start_datum,
-					  cell2, spec->upperdatums, upper_or_start_datum)
+		for_both_cell(cell1, lower_or_start_datum, cell2, upper_or_start_datum)
 		{
 			PartitionRangeDatum *ldatum_next = NULL,
 					   *udatum_next = NULL;
 
 			ldatum = castNode(PartitionRangeDatum, lfirst(cell1));
-			if (lnext(spec->lowerdatums, cell1))
+			if (lnext(cell1))
 				ldatum_next = castNode(PartitionRangeDatum,
-									   lfirst(lnext(spec->lowerdatums, cell1)));
+									   lfirst(lnext(cell1)));
 			udatum = castNode(PartitionRangeDatum, lfirst(cell2));
-			if (lnext(spec->upperdatums, cell2))
+			if (lnext(cell2))
 				udatum_next = castNode(PartitionRangeDatum,
-									   lfirst(lnext(spec->upperdatums, cell2)));
+									   lfirst(lnext(cell2)));
 			get_range_key_properties(key, j, ldatum, udatum,
 									 &partexprs_item,
 									 &keyCol,
@@ -2674,7 +2667,7 @@ get_range_key_properties(PartitionKey key, int keynum,
 		if (*partexprs_item == NULL)
 			elog(ERROR, "wrong number of partition key expressions");
 		*keyCol = copyObject(lfirst(*partexprs_item));
-		*partexprs_item = lnext(key->partexprs, *partexprs_item);
+		*partexprs_item = lnext(*partexprs_item);
 	}
 
 	/* Get appropriate Const nodes for the bounds */
@@ -2722,7 +2715,7 @@ get_range_nulltest(PartitionKey key)
 			if (partexprs_item == NULL)
 				elog(ERROR, "wrong number of partition key expressions");
 			keyCol = copyObject(lfirst(partexprs_item));
-			partexprs_item = lnext(key->partexprs, partexprs_item);
+			partexprs_item = lnext(partexprs_item);
 		}
 
 		nulltest = makeNode(NullTest);
@@ -2840,7 +2833,7 @@ satisfies_hash_partition(PG_FUNCTION_ARGS)
 		PartitionKey key;
 		int			j;
 
-		/* Open parent relation and fetch partition key info */
+		/* Open parent relation and fetch partition keyinfo */
 		parent = try_relation_open(parentId, AccessShareLock);
 		if (parent == NULL)
 			PG_RETURN_NULL();

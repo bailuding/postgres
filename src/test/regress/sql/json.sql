@@ -104,13 +104,9 @@ SELECT row_to_json(row((select array_agg(x) as d from generate_series(5,10) x)),
 
 -- anyarray column
 
-analyze rows;
-
-select attname, to_json(histogram_bounds) histogram_bounds
+select to_json(histogram_bounds) histogram_bounds
 from pg_stats
-where tablename = 'rows' and
-      schemaname = pg_my_temp_schema()::regnamespace::text
-order by 1;
+where attname = 'tmplname' and tablename = 'pg_pltemplate';
 
 -- to_json, timestamps
 

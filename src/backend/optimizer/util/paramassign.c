@@ -40,7 +40,7 @@
  * doesn't really save much executor work anyway.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -83,14 +83,15 @@ assign_param_for_var(PlannerInfo *root, Var *var)
 
 			/*
 			 * This comparison must match _equalVar(), except for ignoring
-			 * varlevelsup.  Note that _equalVar() ignores varnosyn,
-			 * varattnosyn, and location, so this does too.
+			 * varlevelsup.  Note that _equalVar() ignores the location.
 			 */
 			if (pvar->varno == var->varno &&
 				pvar->varattno == var->varattno &&
 				pvar->vartype == var->vartype &&
 				pvar->vartypmod == var->vartypmod &&
-				pvar->varcollid == var->varcollid)
+				pvar->varcollid == var->varcollid &&
+				pvar->varnoold == var->varnoold &&
+				pvar->varoattno == var->varoattno)
 				return pitem->paramId;
 		}
 	}
@@ -509,11 +510,16 @@ identify_current_nestloop_params(PlannerInfo *root, Relids leftrelids)
 {
 	List	   *result;
 	ListCell   *cell;
+	ListCell   *prev;
+	ListCell   *next;
 
 	result = NIL;
-	foreach(cell, root->curOuterParams)
+	prev = NULL;
+	for (cell = list_head(root->curOuterParams); cell; cell = next)
 	{
 		NestLoopParam *nlp = (NestLoopParam *) lfirst(cell);
+
+		next = lnext(cell);
 
 		/*
 		 * We are looking for Vars and PHVs that can be supplied by the
@@ -523,8 +529,8 @@ identify_current_nestloop_params(PlannerInfo *root, Relids leftrelids)
 		if (IsA(nlp->paramval, Var) &&
 			bms_is_member(nlp->paramval->varno, leftrelids))
 		{
-			root->curOuterParams = foreach_delete_current(root->curOuterParams,
-														  cell);
+			root->curOuterParams = list_delete_cell(root->curOuterParams,
+													cell, prev);
 			result = lappend(result, nlp);
 		}
 		else if (IsA(nlp->paramval, PlaceHolderVar) &&
@@ -535,10 +541,12 @@ identify_current_nestloop_params(PlannerInfo *root, Relids leftrelids)
 													 false)->ph_eval_at,
 							   leftrelids))
 		{
-			root->curOuterParams = foreach_delete_current(root->curOuterParams,
-														  cell);
+			root->curOuterParams = list_delete_cell(root->curOuterParams,
+													cell, prev);
 			result = lappend(result, nlp);
 		}
+		else
+			prev = cell;
 	}
 	return result;
 }

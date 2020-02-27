@@ -4,7 +4,7 @@
  *	  Virtual file descriptor definitions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/fd.h
@@ -35,10 +35,6 @@
  * Likewise, use AllocateDir/FreeDir, not opendir/closedir, to allocate
  * open directories (DIR*), and OpenTransientFile/CloseTransientFile for an
  * unbuffered file descriptor.
- *
- * If you really can't use any of the above, at least call AcquireExternalFD
- * or ReserveExternalFD to report any file descriptors that are held for any
- * length of time.  Failure to do so risks unnecessary EMFILE errors.
  */
 #ifndef FD_H
 #define FD_H
@@ -124,12 +120,7 @@ extern int	CloseTransientFile(int fd);
 extern int	BasicOpenFile(const char *fileName, int fileFlags);
 extern int	BasicOpenFilePerm(const char *fileName, int fileFlags, mode_t fileMode);
 
-/* Use these for other cases, and also for long-lived BasicOpenFile FDs */
-extern bool AcquireExternalFD(void);
-extern void ReserveExternalFD(void);
-extern void ReleaseExternalFD(void);
-
-/* Make a directory with default permissions */
+ /* Make a directory with default permissions */
 extern int	MakePGDirectory(const char *directoryName);
 
 /* Miscellaneous support routines */
@@ -144,8 +135,6 @@ extern void AtEOXact_Files(bool isCommit);
 extern void AtEOSubXact_Files(bool isCommit, SubTransactionId mySubid,
 							  SubTransactionId parentSubid);
 extern void RemovePgTempFiles(void);
-extern void RemovePgTempFilesInDir(const char *tmpdirname, bool missing_ok,
-								   bool unlink_all);
 extern bool looks_like_temp_rel_name(const char *name);
 
 extern int	pg_fsync(int fd);
@@ -154,7 +143,6 @@ extern int	pg_fsync_writethrough(int fd);
 extern int	pg_fdatasync(int fd);
 extern void pg_flush_data(int fd, off_t offset, off_t amount);
 extern void fsync_fname(const char *fname, bool isdir);
-extern int	fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel);
 extern int	durable_rename(const char *oldfile, const char *newfile, int loglevel);
 extern int	durable_unlink(const char *fname, int loglevel);
 extern int	durable_link_or_rename(const char *oldfile, const char *newfile, int loglevel);

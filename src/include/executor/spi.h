@@ -3,7 +3,7 @@
  * spi.h
  *				Server Programming Interface public declarations
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/executor/spi.h
@@ -21,14 +21,11 @@
 
 typedef struct SPITupleTable
 {
-	/* Public members */
-	TupleDesc	tupdesc;		/* tuple descriptor */
-	HeapTuple  *vals;			/* array of tuples */
-	uint64		numvals;		/* number of valid tuples */
-
-	/* Private members, not intended for external callers */
-	uint64		alloced;		/* allocated length of vals array */
 	MemoryContext tuptabcxt;	/* memory context of result table */
+	uint64		alloced;		/* # of alloced vals */
+	uint64		free;			/* # of free vals */
+	TupleDesc	tupdesc;		/* tuple descriptor */
+	HeapTuple  *vals;			/* tuples */
 	slist_node	next;			/* link for internal bookkeeping */
 	SubTransactionId subid;		/* subxact in which tuptable was created */
 } SPITupleTable;

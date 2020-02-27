@@ -8,8 +8,8 @@
 
 #include "postgres.h"
 
-#include "px-crypt.h"
 #include "px.h"
+#include "px-crypt.h"
 
 #define MD5_SIZE 16
 

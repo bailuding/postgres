@@ -18,7 +18,7 @@
  * "x" to be considered equal() to another reference to "x" in the query.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -168,12 +168,8 @@ _equalVar(const Var *a, const Var *b)
 	COMPARE_SCALAR_FIELD(vartypmod);
 	COMPARE_SCALAR_FIELD(varcollid);
 	COMPARE_SCALAR_FIELD(varlevelsup);
-
-	/*
-	 * varnosyn/varattnosyn are intentionally ignored here, because Vars with
-	 * different syntactic identifiers are semantically the same as long as
-	 * their varno/varattno match.
-	 */
+	COMPARE_SCALAR_FIELD(varnoold);
+	COMPARE_SCALAR_FIELD(varoattno);
 	COMPARE_LOCATION_FIELD(location);
 
 	return true;
@@ -904,8 +900,6 @@ _equalAppendRelInfo(const AppendRelInfo *a, const AppendRelInfo *b)
 	COMPARE_SCALAR_FIELD(parent_reltype);
 	COMPARE_SCALAR_FIELD(child_reltype);
 	COMPARE_NODE_FIELD(translated_vars);
-	COMPARE_SCALAR_FIELD(num_child_cols);
-	COMPARE_POINTER_FIELD(parent_colnos, a->num_child_cols * sizeof(AttrNumber));
 	COMPARE_SCALAR_FIELD(parent_reloid);
 
 	return true;
@@ -1372,16 +1366,6 @@ _equalCreateStatsStmt(const CreateStatsStmt *a, const CreateStatsStmt *b)
 }
 
 static bool
-_equalAlterStatsStmt(const AlterStatsStmt *a, const AlterStatsStmt *b)
-{
-	COMPARE_NODE_FIELD(defnames);
-	COMPARE_SCALAR_FIELD(stxstattarget);
-	COMPARE_SCALAR_FIELD(missing_ok);
-
-	return true;
-}
-
-static bool
 _equalCreateFunctionStmt(const CreateFunctionStmt *a, const CreateFunctionStmt *b)
 {
 	COMPARE_SCALAR_FIELD(is_procedure);
@@ -1682,7 +1666,6 @@ _equalDropdbStmt(const DropdbStmt *a, const DropdbStmt *b)
 {
 	COMPARE_STRING_FIELD(dbname);
 	COMPARE_SCALAR_FIELD(missing_ok);
-	COMPARE_NODE_FIELD(options);
 
 	return true;
 }
@@ -2661,10 +2644,7 @@ _equalRangeTblEntry(const RangeTblEntry *a, const RangeTblEntry *b)
 	COMPARE_NODE_FIELD(subquery);
 	COMPARE_SCALAR_FIELD(security_barrier);
 	COMPARE_SCALAR_FIELD(jointype);
-	COMPARE_SCALAR_FIELD(joinmergedcols);
 	COMPARE_NODE_FIELD(joinaliasvars);
-	COMPARE_NODE_FIELD(joinleftcols);
-	COMPARE_NODE_FIELD(joinrightcols);
 	COMPARE_NODE_FIELD(functions);
 	COMPARE_SCALAR_FIELD(funcordinality);
 	COMPARE_NODE_FIELD(tablefunc);
@@ -3328,9 +3308,6 @@ equal(const void *a, const void *b)
 			break;
 		case T_CreateStatsStmt:
 			retval = _equalCreateStatsStmt(a, b);
-			break;
-		case T_AlterStatsStmt:
-			retval = _equalAlterStatsStmt(a, b);
 			break;
 		case T_CreateFunctionStmt:
 			retval = _equalCreateFunctionStmt(a, b);

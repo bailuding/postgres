@@ -4,9 +4,7 @@ PGFILEDESC = "vacuumlo - removes orphaned large objects"
 PGAPPICON = win32
 
 PROGRAM = vacuumlo
-OBJS = \
-	$(WIN32RES) \
-	vacuumlo.o
+OBJS	= vacuumlo.o $(WIN32RES)
 
 TAP_TESTS = 1
 

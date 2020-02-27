@@ -137,7 +137,6 @@ AttoptCacheEntry
 AttoptCacheKey
 AttrDefInfo
 AttrDefault
-AttrMap
 AttrMissing
 AttrNumber
 AttributeOpts
@@ -172,7 +171,6 @@ BTInsertStateData
 BTLeader
 BTMetaPageData
 BTOneVacInfo
-BTOptions
 BTPS_State
 BTPageOpaque
 BTPageOpaqueData
@@ -537,7 +535,6 @@ DropSubscriptionStmt
 DropTableSpaceStmt
 DropUserMappingStmt
 DropdbStmt
-DummyIndexOptions
 DumpComponents
 DumpId
 DumpOptions
@@ -980,7 +977,6 @@ HashJoinTuple
 HashMemoryChunk
 HashMetaPage
 HashMetaPageData
-HashOptions
 HashPageOpaque
 HashPageOpaqueData
 HashPageStat
@@ -1216,11 +1212,7 @@ LPVOID
 LPWSTR
 LSEG
 LUID
-LVDeadTuples
-LVParallelState
 LVRelStats
-LVShared
-LVSharedIndStats
 LWLock
 LWLockHandle
 LWLockMinimallyPadded
@@ -1990,7 +1982,6 @@ RegisNode
 RegisteredBgWorker
 ReindexObjectType
 ReindexStmt
-ReindexType
 RelFileNode
 RelFileNodeBackend
 RelIdCacheEnt
@@ -2277,7 +2268,6 @@ SpGistLeafTupleData
 SpGistMetaPageData
 SpGistNodeTuple
 SpGistNodeTupleData
-SpGistOptions
 SpGistPageOpaque
 SpGistPageOpaqueData
 SpGistScanOpaque
@@ -2359,8 +2349,6 @@ TBlockState
 TIDBitmap
 TM_FailureData
 TM_Result
-ToastAttrInfo
-ToastTupleContext
 TOKEN_DEFAULT_DACL
 TOKEN_INFORMATION_CLASS
 TOKEN_PRIVILEGES

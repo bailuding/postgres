@@ -7,13 +7,8 @@
 # default to the current directory.
 #
 # Needs to be run after configuring and creating all generated headers.
-# It's advisable to configure --with-perl --with-python, else you're
-# likely to get errors from associated headers.
 #
 # No output if everything is OK, else compiler errors.
-#
-# src/tools/pginclude/cpluspluscheck
-# Copyright (c) 2009-2020, PostgreSQL Global Development Group
 
 if [ -z "$1" ]; then
     srcdir="."
@@ -89,6 +84,7 @@ do
 	test "$f" = src/include/port/atomics/generic-gcc.h && continue
 	test "$f" = src/include/port/atomics/generic-msvc.h && continue
 	test "$f" = src/include/port/atomics/generic-sunpro.h && continue
+	test "$f" = src/include/port/atomics/generic-xlc.h && continue
 
 	# rusagestub.h is also platform-specific, and will be included
 	# by utils/pg_rusage.h if necessary.
@@ -109,9 +105,6 @@ do
 	test "$f" = src/pl/plpgsql/src/plerrcodes.h && continue
 	test "$f" = src/pl/plpython/spiexceptions.h && continue
 	test "$f" = src/pl/tcl/pltclerrcodes.h && continue
-
-	# Also not meant to be included standalone.
-	test "$f" = src/include/common/unicode_combining_table.h && continue
 
 	# We can't make these Bison output files compilable standalone
 	# without using "%code require", which old Bison versions lack.

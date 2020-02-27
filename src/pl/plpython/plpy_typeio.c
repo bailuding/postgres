@@ -11,15 +11,19 @@
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
-#include "plpy_elog.h"
-#include "plpy_main.h"
-#include "plpy_typeio.h"
-#include "plpython.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+
+#include "plpython.h"
+
+#include "plpy_typeio.h"
+
+#include "plpy_elog.h"
+#include "plpy_main.h"
+
 
 /* conversion from Datums to Python objects */
 static PyObject *PLyBool_FromBool(PLyDatumToOb *arg, Datum d);
@@ -897,7 +901,7 @@ PLyObject_ToBytea(PLyObToDatum *arg, PyObject *plrv,
 				  bool *isnull, bool inarray)
 {
 	PyObject   *volatile plrv_so = NULL;
-	Datum		rv = (Datum) 0;
+	Datum		rv;
 
 	if (plrv == Py_None)
 	{
@@ -921,11 +925,14 @@ PLyObject_ToBytea(PLyObToDatum *arg, PyObject *plrv,
 		memcpy(VARDATA(result), plrv_sc, len);
 		rv = PointerGetDatum(result);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		Py_XDECREF(plrv_so);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	Py_XDECREF(plrv_so);
 
 	return rv;
 }

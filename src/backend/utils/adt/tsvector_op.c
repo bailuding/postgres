@@ -3,7 +3,7 @@
  * tsvector_op.c
  *	  operations over tsvector
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -21,12 +21,10 @@
 #include "commands/trigger.h"
 #include "executor/spi.h"
 #include "funcapi.h"
-#include "lib/qunique.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "parser/parse_coerce.h"
 #include "tsearch/ts_utils.h"
-#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/regproc.h"
@@ -476,9 +474,16 @@ tsvector_delete_by_indices(TSVector tsv, int *indices_to_delete,
 	 */
 	if (indices_count > 1)
 	{
+		int			kp;
+
 		qsort(indices_to_delete, indices_count, sizeof(int), compare_int);
-		indices_count = qunique(indices_to_delete, indices_count, sizeof(int),
-								compare_int);
+		kp = 0;
+		for (k = 1; k < indices_count; k++)
+		{
+			if (indices_to_delete[k] != indices_to_delete[kp])
+				indices_to_delete[++kp] = indices_to_delete[k];
+		}
+		indices_count = ++kp;
 	}
 
 	/*
@@ -666,7 +671,9 @@ tsvector_unnest(PG_FUNCTION_ARGS)
 		bool		nulls[] = {false, false, false};
 		Datum		values[3];
 
-		values[0] = PointerGetDatum(cstring_to_text_with_len(data + arrin[i].pos, arrin[i].len));
+		values[0] = PointerGetDatum(
+									cstring_to_text_with_len(data + arrin[i].pos, arrin[i].len)
+			);
 
 		if (arrin[i].haspos)
 		{
@@ -687,14 +694,15 @@ tsvector_unnest(PG_FUNCTION_ARGS)
 			{
 				positions[j] = Int16GetDatum(WEP_GETPOS(posv->pos[j]));
 				weight = 'D' - WEP_GETWEIGHT(posv->pos[j]);
-				weights[j] = PointerGetDatum(cstring_to_text_with_len(&weight,
-																	  1));
+				weights[j] = PointerGetDatum(
+											 cstring_to_text_with_len(&weight, 1)
+					);
 			}
 
-			values[1] = PointerGetDatum(construct_array(positions, posv->npos,
-														INT2OID, 2, true, 's'));
-			values[2] = PointerGetDatum(construct_array(weights, posv->npos,
-														TEXTOID, -1, false, 'i'));
+			values[1] = PointerGetDatum(
+										construct_array(positions, posv->npos, INT2OID, 2, true, 's'));
+			values[2] = PointerGetDatum(
+										construct_array(weights, posv->npos, TEXTOID, -1, false, 'i'));
 		}
 		else
 		{
@@ -727,8 +735,9 @@ tsvector_to_array(PG_FUNCTION_ARGS)
 
 	for (i = 0; i < tsin->size; i++)
 	{
-		elements[i] = PointerGetDatum(cstring_to_text_with_len(STRPTR(tsin) + arrin[i].pos,
-															   arrin[i].len));
+		elements[i] = PointerGetDatum(
+									  cstring_to_text_with_len(STRPTR(tsin) + arrin[i].pos, arrin[i].len)
+			);
 	}
 
 	array = construct_array(elements, tsin->size, TEXTOID, -1, false, 'i');
@@ -751,6 +760,7 @@ array_to_tsvector(PG_FUNCTION_ARGS)
 	bool	   *nulls;
 	int			nitems,
 				i,
+				j,
 				tslen,
 				datalen = 0;
 	char	   *cur;
@@ -770,8 +780,13 @@ array_to_tsvector(PG_FUNCTION_ARGS)
 	if (nitems > 1)
 	{
 		qsort(dlexemes, nitems, sizeof(Datum), compare_text_lexemes);
-		nitems = qunique(dlexemes, nitems, sizeof(Datum),
-						 compare_text_lexemes);
+		j = 0;
+		for (i = 1; i < nitems; i++)
+		{
+			if (compare_text_lexemes(&dlexemes[j], &dlexemes[i]) < 0)
+				dlexemes[++j] = dlexemes[i];
+		}
+		nitems = ++j;
 	}
 
 	/* Calculate space needed for surviving lexemes. */
@@ -1137,7 +1152,7 @@ tsvector_concat(PG_FUNCTION_ARGS)
 /*
  * Compare two strings by tsvector rules.
  *
- * if prefix = true then it returns zero value iff b has prefix a
+ * if isPrefix = true then it returns zero value iff b has prefix a
  */
 int32
 tsCompareString(char *a, int lena, char *b, int lenb, bool prefix)
@@ -1255,6 +1270,39 @@ checkclass_str(CHKVAL *chkval, WordEntry *entry, QueryOperand *val,
 }
 
 /*
+ * Removes duplicate pos entries. We can't use uniquePos() from
+ * tsvector.c because array might be longer than MAXENTRYPOS
+ *
+ * Returns new length.
+ */
+static int
+uniqueLongPos(WordEntryPos *pos, int npos)
+{
+	WordEntryPos *pos_iter,
+			   *result;
+
+	if (npos <= 1)
+		return npos;
+
+	qsort((void *) pos, npos, sizeof(WordEntryPos), compareWordEntryPos);
+
+	result = pos;
+	pos_iter = pos + 1;
+	while (pos_iter < pos + npos)
+	{
+		if (WEP_GETPOS(*pos_iter) != WEP_GETPOS(*result))
+		{
+			result++;
+			*result = WEP_GETPOS(*pos_iter);
+		}
+
+		pos_iter++;
+	}
+
+	return result + 1 - pos;
+}
+
+/*
  * is there value 'val' in array or not ?
  */
 static bool
@@ -1348,9 +1396,7 @@ checkcondition_str(void *checkval, QueryOperand *val, ExecPhraseData *data)
 		{
 			/* Sort and make unique array of found positions */
 			data->pos = allpos;
-			qsort(data->pos, npos, sizeof(WordEntryPos), compareWordEntryPos);
-			data->npos = qunique(data->pos, npos, sizeof(WordEntryPos),
-								 compareWordEntryPos);
+			data->npos = uniqueLongPos(allpos, npos);
 			data->allocated = true;
 		}
 	}

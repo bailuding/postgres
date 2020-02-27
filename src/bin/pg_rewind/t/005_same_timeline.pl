@@ -1,7 +1,3 @@
-#
-# Test that running pg_rewind with the source and target clusters
-# on the same timeline runs successfully.
-#
 use strict;
 use warnings;
 use TestLib;
@@ -11,6 +7,9 @@ use FindBin;
 use lib $FindBin::RealBin;
 
 use RewindTest;
+
+# Test that running pg_rewind if the two clusters are on the same
+# timeline runs successfully.
 
 RewindTest::setup_cluster();
 RewindTest::start_master();

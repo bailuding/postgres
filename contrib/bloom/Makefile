@@ -1,14 +1,7 @@
 # contrib/bloom/Makefile
 
 MODULE_big = bloom
-OBJS = \
-	$(WIN32RES) \
-	blcost.o \
-	blinsert.o \
-	blscan.o \
-	blutils.o \
-	blvacuum.o \
-	blvalidate.o
+OBJS = blcost.o blinsert.o blscan.o blutils.o blvacuum.o blvalidate.o $(WIN32RES)
 
 EXTENSION = bloom
 DATA = bloom--1.0.sql

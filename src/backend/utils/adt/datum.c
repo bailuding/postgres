@@ -3,7 +3,7 @@
  * datum.c
  *	  POSTGRES Datum (abstract data type) manipulation routines.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -42,9 +42,8 @@
 
 #include "postgres.h"
 
-#include "access/detoast.h"
+#include "access/tuptoaster.h"
 #include "fmgr.h"
-#include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/expandeddatum.h"
 
@@ -264,8 +263,6 @@ datumIsEqual(Datum value1, Datum value2, bool typByVal, int typLen)
 bool
 datum_image_eq(Datum value1, Datum value2, bool typByVal, int typLen)
 {
-	Size		len1,
-				len2;
 	bool		result = true;
 
 	if (typByVal)
@@ -280,6 +277,9 @@ datum_image_eq(Datum value1, Datum value2, bool typByVal, int typLen)
 	}
 	else if (typLen == -1)
 	{
+		Size		len1,
+					len2;
+
 		len1 = toast_raw_datum_size(value1);
 		len2 = toast_raw_datum_size(value2);
 		/* No need to de-toast if lengths don't match. */
@@ -304,49 +304,10 @@ datum_image_eq(Datum value1, Datum value2, bool typByVal, int typLen)
 				pfree(arg2val);
 		}
 	}
-	else if (typLen == -2)
-	{
-		char	   *s1,
-				   *s2;
-
-		/* Compare cstring datums */
-		s1 = DatumGetCString(value1);
-		s2 = DatumGetCString(value2);
-		len1 = strlen(s1) + 1;
-		len2 = strlen(s2) + 1;
-		if (len1 != len2)
-			return false;
-		result = (memcmp(s1, s2, len1) == 0);
-	}
 	else
 		elog(ERROR, "unexpected typLen: %d", typLen);
 
 	return result;
-}
-
-/*-------------------------------------------------------------------------
- * btequalimage
- *
- * Generic "equalimage" support function.
- *
- * B-Tree operator classes whose equality function could safely be replaced by
- * datum_image_eq() in all cases can use this as their "equalimage" support
- * function.
- *
- * Currently, we unconditionally assume that any B-Tree operator class that
- * registers btequalimage as its support function 4 must be able to safely use
- * optimizations like deduplication (i.e. we return true unconditionally).  If
- * it ever proved necessary to rescind support for an operator class, we could
- * do that in a targeted fashion by doing something with the opcintype
- * argument.
- *-------------------------------------------------------------------------
- */
-Datum
-btequalimage(PG_FUNCTION_ARGS)
-{
-	/* Oid		opcintype = PG_GETARG_OID(0); */
-
-	PG_RETURN_BOOL(true);
 }
 
 /*-------------------------------------------------------------------------

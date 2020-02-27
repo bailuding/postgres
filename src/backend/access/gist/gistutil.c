@@ -4,7 +4,7 @@
  *	  utilities routines for the postgres GiST index access method.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -22,9 +22,10 @@
 #include "storage/indexfsm.h"
 #include "storage/lmgr.h"
 #include "utils/float.h"
-#include "utils/lsyscache.h"
-#include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/snapmgr.h"
+#include "utils/lsyscache.h"
+
 
 /*
  * Write itup vector to page, has no control of free space.
@@ -119,7 +120,7 @@ gistjoinvector(IndexTuple *itvec, int *len, IndexTuple *additvec, int addlen)
 }
 
 /*
- * make plain IndexTuple vector
+ * make plain IndexTupleVector
  */
 
 IndexTupleData *
@@ -907,15 +908,29 @@ gistPageRecyclable(Page page)
 bytea *
 gistoptions(Datum reloptions, bool validate)
 {
+	relopt_value *options;
+	GiSTOptions *rdopts;
+	int			numoptions;
 	static const relopt_parse_elt tab[] = {
 		{"fillfactor", RELOPT_TYPE_INT, offsetof(GiSTOptions, fillfactor)},
-		{"buffering", RELOPT_TYPE_ENUM, offsetof(GiSTOptions, buffering_mode)}
+		{"buffering", RELOPT_TYPE_STRING, offsetof(GiSTOptions, bufferingModeOffset)}
 	};
 
-	return (bytea *) build_reloptions(reloptions, validate,
-									  RELOPT_KIND_GIST,
-									  sizeof(GiSTOptions),
-									  tab, lengthof(tab));
+	options = parseRelOptions(reloptions, validate, RELOPT_KIND_GIST,
+							  &numoptions);
+
+	/* if none set, we're done */
+	if (numoptions == 0)
+		return NULL;
+
+	rdopts = allocateReloptStruct(sizeof(GiSTOptions), options, numoptions);
+
+	fillRelOptions((void *) rdopts, sizeof(GiSTOptions), options, numoptions,
+				   validate, tab, lengthof(tab));
+
+	pfree(options);
+
+	return (bytea *) rdopts;
 }
 
 /*

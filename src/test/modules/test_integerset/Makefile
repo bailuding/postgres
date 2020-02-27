@@ -1,9 +1,7 @@
 # src/test/modules/test_integerset/Makefile
 
 MODULE_big = test_integerset
-OBJS = \
-	$(WIN32RES) \
-	test_integerset.o
+OBJS = test_integerset.o $(WIN32RES)
 PGFILEDESC = "test_integerset - test code for src/backend/lib/integerset.c"
 
 EXTENSION = test_integerset

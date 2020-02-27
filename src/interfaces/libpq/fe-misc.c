@@ -7,7 +7,7 @@
  *		 miscellaneous useful functions
  *
  * The communication routines here are analogous to the ones in
- * backend/libpq/pqcomm.c and backend/libpq/pqformat.c, but operate
+ * backend/libpq/pqcomm.c and backend/libpq/pqcomprim.c, but operate
  * in the considerably different environment of the frontend libpq.
  * In particular, we work with a bare nonblock-mode socket, rather than
  * a stdio stream, so that we can avoid unwanted blocking of the application.
@@ -19,7 +19,7 @@
  * routines.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -50,8 +50,9 @@
 #include "libpq-fe.h"
 #include "libpq-int.h"
 #include "mb/pg_wchar.h"
-#include "pg_config_paths.h"
 #include "port/pg_bswap.h"
+#include "pg_config_paths.h"
+
 
 static int	pqPutMsgBytes(const void *buf, size_t len, PGconn *conn);
 static int	pqSendSome(PGconn *conn, int len);
@@ -802,7 +803,8 @@ retry4:
 	 */
 definitelyEOF:
 	printfPQExpBuffer(&conn->errorMessage,
-					  libpq_gettext("server closed the connection unexpectedly\n"
+					  libpq_gettext(
+									"server closed the connection unexpectedly\n"
 									"\tThis probably means the server terminated abnormally\n"
 									"\tbefore or while processing the request.\n"));
 

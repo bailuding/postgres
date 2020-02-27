@@ -1,7 +1,7 @@
 /* src/interfaces/ecpg/preproc/ecpg.c */
 
 /* Main for ecpg, the PostgreSQL embedded SQL precompiler. */
-/* Copyright (c) 1996-2020, PostgreSQL Global Development Group */
+/* Copyright (c) 1996-2019, PostgreSQL Global Development Group */
 
 #include "postgres_fe.h"
 
@@ -208,7 +208,7 @@ main(int argc, char *const argv[])
 					snprintf(informix_path, MAXPGPATH, "%s/informix/esql", pkginclude_path);
 					add_include_path(informix_path);
 				}
-				else if (pg_strcasecmp(optarg, "ORACLE") == 0)
+				else if (strncmp(optarg, "ORACLE", strlen("ORACLE")) == 0)
 				{
 					compat = ECPG_COMPAT_ORACLE;
 				}
@@ -219,11 +219,11 @@ main(int argc, char *const argv[])
 				}
 				break;
 			case 'r':
-				if (pg_strcasecmp(optarg, "no_indicator") == 0)
+				if (strcmp(optarg, "no_indicator") == 0)
 					force_indicator = false;
-				else if (pg_strcasecmp(optarg, "prepare") == 0)
+				else if (strcmp(optarg, "prepare") == 0)
 					auto_prepare = true;
-				else if (pg_strcasecmp(optarg, "questionmarks") == 0)
+				else if (strcmp(optarg, "questionmarks") == 0)
 					questionmarks = true;
 				else
 				{

@@ -31,8 +31,9 @@
 #include "postgres.h"
 
 #include "imath.h"
-#include "pgp.h"
+
 #include "px.h"
+#include "pgp.h"
 
 static mpz_t *
 mp_new()

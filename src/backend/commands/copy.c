@@ -3,7 +3,7 @@
  * copy.c
  *		Implements the COPY utility command
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -39,8 +39,8 @@
 #include "libpq/pqformat.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
-#include "nodes/makefuncs.h"
 #include "optimizer/optimizer.h"
+#include "nodes/makefuncs.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
 #include "parser/parse_expr.h"
@@ -57,6 +57,7 @@
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
+
 
 #define ISOCTAL(c) (((c) >= '0') && ((c) <= '7'))
 #define OCTVALUE(c) ((c) - '0')
@@ -175,6 +176,7 @@ typedef struct CopyStateData
 	 * Working state for COPY FROM
 	 */
 	AttrNumber	num_defaults;
+	FmgrInfo	oid_in_function;
 	FmgrInfo   *in_functions;	/* array of input functions for each attrs */
 	Oid		   *typioparams;	/* array of element types for in_functions */
 	int		   *defmap;			/* array of default att numbers */
@@ -882,7 +884,6 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 	if (stmt->relation)
 	{
 		LOCKMODE	lockmode = is_from ? RowExclusiveLock : AccessShareLock;
-		ParseNamespaceItem *nsitem;
 		RangeTblEntry *rte;
 		TupleDesc	tupDesc;
 		List	   *attnums;
@@ -895,15 +896,14 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 
 		relid = RelationGetRelid(rel);
 
-		nsitem = addRangeTableEntryForRelation(pstate, rel, lockmode,
-											   NULL, false, false);
-		rte = nsitem->p_rte;
+		rte = addRangeTableEntryForRelation(pstate, rel, lockmode,
+											NULL, false, false);
 		rte->requiredPerms = (is_from ? ACL_INSERT : ACL_SELECT);
 
 		if (stmt->whereClause)
 		{
-			/* add nsitem to query namespace */
-			addNSItemToQuery(pstate, nsitem, false, true, true);
+			/* add rte to column namespace  */
+			addRTEtoQuery(pstate, rte, false, true, true);
 
 			/* Transform the raw expression tree */
 			whereClause = transformExpr(pstate, stmt->whereClause, EXPR_KIND_COPY_WHERE);
@@ -1064,6 +1064,7 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 		/* check read-only transaction and parallel mode */
 		if (XactReadOnly && !rel->rd_islocaltemp)
 			PreventCommandIfReadOnly("COPY FROM");
+		PreventCommandIfParallelMode("COPY FROM");
 
 		cstate = BeginCopyFrom(pstate, rel, stmt->filename, stmt->is_program,
 							   NULL, stmt->attlist, stmt->options);
@@ -1916,11 +1917,13 @@ BeginCopyTo(ParseState *pstate,
 			{
 				cstate->copy_file = AllocateFile(cstate->filename, PG_BINARY_W);
 			}
-			PG_FINALLY();
+			PG_CATCH();
 			{
 				umask(oumask);
+				PG_RE_THROW();
 			}
 			PG_END_TRY();
+			umask(oumask);
 			if (cstate->copy_file == NULL)
 			{
 				/* copy errno because ereport subfunctions might change it */
@@ -3222,7 +3225,7 @@ CopyFrom(CopyState cstate)
 				/* Compute stored generated columns */
 				if (resultRelInfo->ri_RelationDesc->rd_att->constr &&
 					resultRelInfo->ri_RelationDesc->rd_att->constr->has_generated_stored)
-					ExecComputeStoredGenerated(estate, myslot, CMD_INSERT);
+					ExecComputeStoredGenerated(estate, myslot);
 
 				/*
 				 * If the target is a plain table, check the constraints of

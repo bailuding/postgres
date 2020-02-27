@@ -3,7 +3,7 @@
  * varlena.c
  *	  Functions for the variable-length built-in types.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,7 +17,7 @@
 #include <ctype.h>
 #include <limits.h>
 
-#include "access/detoast.h"
+#include "access/tuptoaster.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
 #include "common/int.h"
@@ -2066,7 +2066,7 @@ varstr_sortsupport(SortSupport ssup, Oid typid, Oid collid)
 
 	/*
 	 * If we're using abbreviated keys, or if we're using a locale-aware
-	 * comparison, we need to initialize a VarStringSortSupport object. Both
+	 * comparison, we need to initialize a StringSortSupport object.  Both
 	 * cases will make use of the temporary buffers we initialize here for
 	 * scratch space (and to detect requirement for BpChar semantics from
 	 * caller), and the abbreviation case requires additional state.
@@ -2781,26 +2781,6 @@ varstr_abbrev_abort(int memtupcount, SortSupport ssup)
 #endif
 
 	return true;
-}
-
-/*
- * Generic equalimage support function for character type's operator classes.
- * Disables the use of deduplication with nondeterministic collations.
- */
-Datum
-btvarstrequalimage(PG_FUNCTION_ARGS)
-{
-	/* Oid		opcintype = PG_GETARG_OID(0); */
-	Oid			collid = PG_GET_COLLATION();
-
-	check_collation_set(collid);
-
-	if (lc_collate_is_c(collid) ||
-		collid == DEFAULT_COLLATION_OID ||
-		get_collation_isdeterministic(collid))
-		PG_RETURN_BOOL(true);
-	else
-		PG_RETURN_BOOL(false);
 }
 
 Datum

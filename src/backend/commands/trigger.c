@@ -3,7 +3,7 @@
  * trigger.c
  *	  PostgreSQL TRIGGERs support code.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -179,6 +179,7 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 	ScanKeyData key;
 	Relation	pgrel;
 	HeapTuple	tuple;
+	Oid			fargtypes[1];	/* dummy */
 	Oid			funcrettype;
 	Oid			trigoid;
 	char		internaltrigname[NAMEDATALEN];
@@ -565,7 +566,7 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 	if (!whenClause && stmt->whenClause)
 	{
 		ParseState *pstate;
-		ParseNamespaceItem *nsitem;
+		RangeTblEntry *rte;
 		List	   *varList;
 		ListCell   *lc;
 
@@ -574,20 +575,20 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 		pstate->p_sourcetext = queryString;
 
 		/*
-		 * Set up nsitems for OLD and NEW references.
+		 * Set up RTEs for OLD and NEW references.
 		 *
 		 * 'OLD' must always have varno equal to 1 and 'NEW' equal to 2.
 		 */
-		nsitem = addRangeTableEntryForRelation(pstate, rel,
-											   AccessShareLock,
-											   makeAlias("old", NIL),
-											   false, false);
-		addNSItemToQuery(pstate, nsitem, false, true, true);
-		nsitem = addRangeTableEntryForRelation(pstate, rel,
-											   AccessShareLock,
-											   makeAlias("new", NIL),
-											   false, false);
-		addNSItemToQuery(pstate, nsitem, false, true, true);
+		rte = addRangeTableEntryForRelation(pstate, rel,
+											AccessShareLock,
+											makeAlias("old", NIL),
+											false, false);
+		addRTEtoQuery(pstate, rte, false, true, true);
+		rte = addRangeTableEntryForRelation(pstate, rel,
+											AccessShareLock,
+											makeAlias("new", NIL),
+											false, false);
+		addRTEtoQuery(pstate, rte, false, true, true);
 
 		/* Transform expression.  Copy to be sure we don't modify original */
 		whenClause = transformWhereClause(pstate,
@@ -689,7 +690,7 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 	 * Find and validate the trigger function.
 	 */
 	if (!OidIsValid(funcoid))
-		funcoid = LookupFuncName(stmt->funcname, 0, NULL, false);
+		funcoid = LookupFuncName(stmt->funcname, 0, fargtypes, false);
 	if (!isInternal)
 	{
 		aclresult = pg_proc_aclcheck(funcoid, GetUserId(), ACL_EXECUTE);
@@ -774,7 +775,7 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 											  NULL,
 											  true, /* islocal */
 											  0,	/* inhcount */
-											  true, /* noinherit */
+											  true, /* isnoinherit */
 											  isInternal);	/* is_internal */
 	}
 
@@ -1144,6 +1145,7 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 			CreateTrigStmt *childStmt;
 			Relation	childTbl;
 			Node	   *qual;
+			bool		found_whole_row;
 
 			childTbl = table_open(partdesc->oids[i], ShareRowExclusiveLock);
 
@@ -1176,10 +1178,16 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 			qual = copyObject(whenClause);
 			qual = (Node *)
 				map_partition_varattnos((List *) qual, PRS2_OLD_VARNO,
-										childTbl, rel);
+										childTbl, rel,
+										&found_whole_row);
+			if (found_whole_row)
+				elog(ERROR, "unexpected whole-row reference found in trigger WHEN clause");
 			qual = (Node *)
 				map_partition_varattnos((List *) qual, PRS2_NEW_VARNO,
-										childTbl, rel);
+										childTbl, rel,
+										&found_whole_row);
+			if (found_whole_row)
+				elog(ERROR, "unexpected whole-row reference found in trigger WHEN clause");
 
 			CreateTrigger(childStmt, queryString,
 						  partdesc->oids[i], refRelOid,
@@ -2423,11 +2431,13 @@ ExecCallTriggerFunc(TriggerData *trigdata,
 	{
 		result = FunctionCallInvoke(fcinfo);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		MyTriggerDepth--;
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+	MyTriggerDepth--;
 
 	pgstat_end_function_usage(&fcusage, true);
 
@@ -2526,7 +2536,7 @@ ExecBRInsertTriggers(EState *estate, ResultRelInfo *relinfo,
 					 TupleTableSlot *slot)
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
-	HeapTuple	newtuple = NULL;
+	HeapTuple	newtuple = false;
 	bool		should_free;
 	TriggerData LocTriggerData;
 	int			i;
@@ -3026,8 +3036,8 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 		/*
 		 * In READ COMMITTED isolation level it's possible that target tuple
 		 * was changed due to concurrent update.  In that case we have a raw
-		 * subplan output tuple in epqslot_candidate, and need to run it
-		 * through the junk filter to produce an insertable tuple.
+		 * subplan output tuple in newSlot, and need to run it through the
+		 * junk filter to produce an insertable tuple.
 		 *
 		 * Caution: more than likely, the passed-in slot is the same as the
 		 * junkfilter's output slot, so we are clobbering the original value
@@ -3171,7 +3181,7 @@ ExecIRUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
 	TupleTableSlot *oldslot = ExecGetTriggerOldSlot(estate, relinfo);
-	HeapTuple	newtuple = NULL;
+	HeapTuple	newtuple = false;
 	bool		should_free;
 	TriggerData LocTriggerData;
 	int			i;
@@ -4248,17 +4258,12 @@ AfterTriggerExecute(EState *estate,
 			LocTriggerData.tg_trigtuple =
 				ExecFetchSlotHeapTuple(trig_tuple_slot1, true, &should_free_trig);
 
-			if ((evtshared->ats_event & TRIGGER_EVENT_OPMASK) ==
-				TRIGGER_EVENT_UPDATE)
-			{
-				LocTriggerData.tg_newslot = trig_tuple_slot2;
-				LocTriggerData.tg_newtuple =
-					ExecFetchSlotHeapTuple(trig_tuple_slot2, true, &should_free_new);
-			}
-			else
-			{
-				LocTriggerData.tg_newtuple = NULL;
-			}
+			LocTriggerData.tg_newslot = trig_tuple_slot2;
+			LocTriggerData.tg_newtuple =
+				((evtshared->ats_event & TRIGGER_EVENT_OPMASK) ==
+				 TRIGGER_EVENT_UPDATE) ?
+				ExecFetchSlotHeapTuple(trig_tuple_slot2, true, &should_free_new) : NULL;
+
 			break;
 
 		default:
@@ -4353,14 +4358,10 @@ AfterTriggerExecute(EState *estate,
 	if (should_free_new)
 		heap_freetuple(LocTriggerData.tg_newtuple);
 
-	/* don't clear slots' contents if foreign table */
-	if (trig_tuple_slot1 == NULL)
-	{
-		if (LocTriggerData.tg_trigslot)
-			ExecClearTuple(LocTriggerData.tg_trigslot);
-		if (LocTriggerData.tg_newslot)
-			ExecClearTuple(LocTriggerData.tg_newslot);
-	}
+	if (LocTriggerData.tg_trigslot)
+		ExecClearTuple(LocTriggerData.tg_trigslot);
+	if (LocTriggerData.tg_newslot)
+		ExecClearTuple(LocTriggerData.tg_newslot);
 
 	/*
 	 * If doing EXPLAIN ANALYZE, stop charging time to this trigger, and count
@@ -4514,14 +4515,13 @@ afterTriggerInvokeEvents(AfterTriggerEventList *events,
 					trigdesc = rInfo->ri_TrigDesc;
 					finfo = rInfo->ri_TrigFunctions;
 					instr = rInfo->ri_TrigInstrument;
-					if (slot1 != NULL)
-					{
-						ExecDropSingleTupleTableSlot(slot1);
-						ExecDropSingleTupleTableSlot(slot2);
-						slot1 = slot2 = NULL;
-					}
 					if (rel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
 					{
+						if (slot1 != NULL)
+						{
+							ExecDropSingleTupleTableSlot(slot1);
+							ExecDropSingleTupleTableSlot(slot2);
+						}
 						slot1 = MakeSingleTupleTableSlot(rel->rd_att,
 														 &TTSOpsMinimalTuple);
 						slot2 = MakeSingleTupleTableSlot(rel->rd_att,

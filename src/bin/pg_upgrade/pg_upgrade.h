@@ -1,7 +1,7 @@
 /*
  *	pg_upgrade.h
  *
- *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/pg_upgrade.h
  */
 
@@ -15,8 +15,14 @@
 /* Use port in the private/dynamic port number range */
 #define DEF_PGUPORT			50432
 
+/* Allocate for null byte */
+#define USER_NAME_SIZE		128
+
 #define MAX_STRING			1024
+#define LINE_ALLOC			4096
 #define QUERY_ALLOC			8192
+
+#define MIGRATOR_API_VERSION	1
 
 #define MESSAGE_WIDTH		60
 
@@ -135,7 +141,7 @@ typedef struct
 	char	   *nspname;		/* namespace name */
 	char	   *relname;		/* relation name */
 	Oid			reloid;			/* relation OID */
-	Oid			relfilenode;	/* relation file node */
+	Oid			relfilenode;	/* relation relfile node */
 	Oid			indtable;		/* if index, OID of its table, else 0 */
 	Oid			toastheap;		/* if toast table, OID of base table, else 0 */
 	char	   *tablespace;		/* tablespace path; "" for cluster default */
@@ -308,6 +314,7 @@ typedef struct
 typedef struct
 {
 	const char *progname;		/* complete pathname for this program */
+	char	   *exec_path;		/* full path to my executable */
 	char	   *user;			/* username for clusters */
 	bool		user_specified; /* user specified on command-line */
 	char	  **old_tablespaces;	/* tablespaces */

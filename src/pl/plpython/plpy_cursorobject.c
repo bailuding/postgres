@@ -11,15 +11,19 @@
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "mb/pg_wchar.h"
+#include "utils/memutils.h"
+
+#include "plpython.h"
+
 #include "plpy_cursorobject.h"
+
 #include "plpy_elog.h"
 #include "plpy_main.h"
 #include "plpy_planobject.h"
 #include "plpy_procedure.h"
 #include "plpy_resultobject.h"
 #include "plpy_spi.h"
-#include "plpython.h"
-#include "utils/memutils.h"
+
 
 static PyObject *PLy_cursor_query(const char *query);
 static void PLy_cursor_dealloc(PyObject *arg);
@@ -224,11 +228,13 @@ PLy_cursor_plan(PyObject *ob, PyObject *args)
 				plan->values[j] = PLy_output_convert(arg, elem, &isnull);
 				nulls[j] = isnull ? 'n' : ' ';
 			}
-			PG_FINALLY();
+			PG_CATCH();
 			{
 				Py_DECREF(elem);
+				PG_RE_THROW();
 			}
 			PG_END_TRY();
+			Py_DECREF(elem);
 		}
 
 		portal = SPI_cursor_open(NULL, plan->plan, plan->values, nulls,

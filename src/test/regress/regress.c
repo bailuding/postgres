@@ -6,7 +6,7 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/test/regress/regress.c
@@ -19,9 +19,9 @@
 #include <math.h>
 #include <signal.h>
 
-#include "access/detoast.h"
 #include "access/htup_details.h"
 #include "access/transam.h"
+#include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_type.h"
@@ -36,9 +36,10 @@
 #include "port/atomics.h"
 #include "utils/builtins.h"
 #include "utils/geo_decls.h"
-#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/typcache.h"
+#include "utils/memutils.h"
+
 
 #define EXPECT_TRUE(expr)	\
 	do { \
@@ -585,7 +586,7 @@ make_tuple_indirect(PG_FUNCTION_ARGS)
 
 		/* copy datum, so it still lives later */
 		if (VARATT_IS_EXTERNAL_ONDISK(attr))
-			attr = detoast_external_attr(attr);
+			attr = heap_tuple_fetch_attr(attr);
 		else
 		{
 			struct varlena *oldattr = attr;

@@ -4,7 +4,7 @@
  *	  header file for postgres hash access method implementation
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/hash.h
@@ -20,7 +20,7 @@
 #include "access/amapi.h"
 #include "access/itup.h"
 #include "access/sdir.h"
-#include "catalog/pg_am_d.h"
+#include "fmgr.h"
 #include "lib/stringinfo.h"
 #include "storage/bufmgr.h"
 #include "storage/lockdefs.h"
@@ -252,7 +252,7 @@ typedef struct HashMetaPageData
 	uint32		hashm_maxbucket;	/* ID of maximum bucket in use */
 	uint32		hashm_highmask; /* mask to modulo into entire table */
 	uint32		hashm_lowmask;	/* mask to modulo into lower half of table */
-	uint32		hashm_ovflpoint;	/* splitpoint from which ovflpage being
+	uint32		hashm_ovflpoint;	/* splitpoint from which ovflpgs being
 									 * allocated */
 	uint32		hashm_firstfree;	/* lowest-number free ovflpage (bit#) */
 	uint32		hashm_nmaps;	/* number of bitmap pages */
@@ -263,21 +263,6 @@ typedef struct HashMetaPageData
 } HashMetaPageData;
 
 typedef HashMetaPageData *HashMetaPage;
-
-typedef struct HashOptions
-{
-	int32		varlena_header_;	/* varlena header (do not touch directly!) */
-	int			fillfactor;		/* page fill factor in percent (0..100) */
-} HashOptions;
-
-#define HashGetFillFactor(relation) \
-	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
-				 relation->rd_rel->relam == HASH_AM_OID), \
-	 (relation)->rd_options ? \
-	 ((HashOptions *) (relation)->rd_options)->fillfactor :	\
-	 HASH_DEFAULT_FILLFACTOR)
-#define HashGetTargetPageUsage(relation) \
-	(BLCKSZ * HashGetFillFactor(relation) / 100)
 
 /*
  * Maximum size of a hash index item (it's okay to have only one per page)

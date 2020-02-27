@@ -23,7 +23,7 @@ standard_targets = all install installdirs uninstall distprep clean distclean ma
 # these targets should recurse even into subdirectories not being built:
 standard_always_targets = distprep clean distclean maintainer-clean
 
-.PHONY: $(standard_targets) install-strip html man installcheck-parallel update-unicode
+.PHONY: $(standard_targets) install-strip html man installcheck-parallel maintainer-check
 
 # make `all' the default target
 all:
@@ -73,6 +73,9 @@ endif
 endif # not PGXS
 
 vpathsearch = `for f in $(addsuffix /$(1),$(subst :, ,. $(VPATH))); do test -r $$f && echo $$f && break; done`
+
+# Saved arguments from configure
+configure_args = @configure_args@
 
 
 ##########################################################################
@@ -182,7 +185,6 @@ with_perl	= @with_perl@
 with_python	= @with_python@
 with_tcl	= @with_tcl@
 with_openssl	= @with_openssl@
-with_readline	= @with_readline@
 with_selinux	= @with_selinux@
 with_systemd	= @with_systemd@
 with_gssapi	= @with_gssapi@
@@ -349,22 +351,6 @@ XGETTEXT = @XGETTEXT@
 GZIP	= gzip
 BZIP2	= bzip2
 
-DOWNLOAD = wget -O $@ --no-use-server-timestamps
-#DOWNLOAD = curl -o $@
-
-
-# Unicode data information
-
-# Before each major release, update these and run make update-unicode.
-
-# Pick a release from here: <https://www.unicode.org/Public/>.  Note
-# that the most recent release listed there is often a pre-release;
-# don't pick that one, except for testing.
-UNICODE_VERSION = 12.1.0
-
-# Pick a release from here: <http://cldr.unicode.org/index/downloads>
-CLDR_VERSION = 34
-
 
 # Tree-wide build support
 
@@ -496,6 +482,11 @@ GCOV = @GCOV@
 LCOV = @LCOV@
 GENHTML = @GENHTML@
 
+ifeq ($(enable_coverage),yes)
+# ccache loses .gcno files
+export CCACHE_DISABLE = 1
+endif
+
 # Feature settings
 
 DEF_PGPORT = @default_port@
@@ -515,6 +506,10 @@ build_os = @build_os@
 host_tuple = @host@
 host_os = @host_os@
 host_cpu = @host_cpu@
+
+# This is mainly for use on FreeBSD, where we have both a.out and elf
+# systems now.  May be applicable to other systems to?
+ELF_SYSTEM= @ELF_SYS@
 
 # Backend stack size limit has to be hard-wired on Windows (it's in bytes)
 WIN32_STACK_RLIMIT=4194304

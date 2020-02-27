@@ -7,7 +7,7 @@
  *	  stuff - checking the qualification and projecting the tuple
  *	  appropriately.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -137,7 +137,8 @@ ExecScanFetch(ScanState *node,
  *		ExecScan
  *
  *		Scans the relation using the 'access method' indicated and
- *		returns the next qualifying tuple.
+ *		returns the next qualifying tuple in the direction specified
+ *		in the global variable ExecDirection.
  *		The access method returns the next tuple and ExecScan() is
  *		responsible for checking the tuple returned against the qual-clause.
  *

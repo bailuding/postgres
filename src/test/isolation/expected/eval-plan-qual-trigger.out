@@ -2202,9 +2202,3 @@ key            data
 
 key-a          val-a-s1-ups2  
 key-b          val-b-s1       
-unused step name: s2_r
-unused step name: s3_b_rc
-unused step name: s3_c
-unused step name: s3_del_a
-unused step name: s3_r
-unused step name: s3_upd_a_data

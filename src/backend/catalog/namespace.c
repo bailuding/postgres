@@ -9,7 +9,7 @@
  * and implementing search-path-controlled searches.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -504,9 +504,9 @@ RangeVarGetCreationNamespace(const RangeVar *newRelation)
  * permission on the target namespace, this function will instead signal
  * an ERROR.
  *
- * If non-NULL, *existing_relation_id is set to the OID of any existing relation
- * with the same name which already exists in that namespace, or to InvalidOid
- * if no such relation exists.
+ * If non-NULL, *existing_oid is set to the OID of any existing relation with
+ * the same name which already exists in that namespace, or to InvalidOid if
+ * no such relation exists.
  *
  * If lockmode != NoLock, the specified lock mode is acquired on the existing
  * relation, if any, provided that the current user owns the target relation.
@@ -2412,7 +2412,7 @@ TSParserIsVisible(Oid prsId)
 /*
  * get_ts_dict_oid - find a TS dictionary by possibly qualified name
  *
- * If not found, returns InvalidOid if missing_ok, else throws error
+ * If not found, returns InvalidOid if failOK, else throws error
  */
 Oid
 get_ts_dict_oid(List *names, bool missing_ok)
@@ -3235,8 +3235,8 @@ isTempNamespaceInUse(Oid namespaceId)
 
 	backendId = GetTempNamespaceBackendId(namespaceId);
 
-	/* No such temporary namespace? */
-	if (backendId == InvalidBackendId)
+	if (backendId == InvalidBackendId ||
+		backendId == MyBackendId)
 		return false;
 
 	/* Is the backend alive? */
@@ -3415,7 +3415,7 @@ OverrideSearchPathMatchesCurrent(OverrideSearchPath *path)
 	if (path->addTemp)
 	{
 		if (lc && lfirst_oid(lc) == myTempNamespace)
-			lc = lnext(activeSearchPath, lc);
+			lc = lnext(lc);
 		else
 			return false;
 	}
@@ -3423,7 +3423,7 @@ OverrideSearchPathMatchesCurrent(OverrideSearchPath *path)
 	if (path->addCatalog)
 	{
 		if (lc && lfirst_oid(lc) == PG_CATALOG_NAMESPACE)
-			lc = lnext(activeSearchPath, lc);
+			lc = lnext(lc);
 		else
 			return false;
 	}
@@ -3434,7 +3434,7 @@ OverrideSearchPathMatchesCurrent(OverrideSearchPath *path)
 	foreach(lcp, path->schemas)
 	{
 		if (lc && lfirst_oid(lc) == lfirst_oid(lcp))
-			lc = lnext(activeSearchPath, lc);
+			lc = lnext(lc);
 		else
 			return false;
 	}

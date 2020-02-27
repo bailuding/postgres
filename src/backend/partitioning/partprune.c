@@ -25,7 +25,7 @@
  *
  * See gen_partprune_steps_internal() for more details on step generation.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -53,7 +53,6 @@
 #include "partitioning/partbounds.h"
 #include "partitioning/partprune.h"
 #include "rewrite/rewriteManip.h"
-#include "utils/array.h"
 #include "utils/lsyscache.h"
 
 
@@ -175,7 +174,6 @@ static List *get_steps_using_prefix_recurse(GeneratePruningStepsContext *context
 											Oid step_lastcmpfn,
 											int step_lastkeyno,
 											Bitmapset *step_nullkeys,
-											List *prefix,
 											ListCell *start,
 											List *step_exprs,
 											List *step_cmpfns);
@@ -620,16 +618,31 @@ gen_partprune_steps(RelOptInfo *rel, List *clauses, PartClauseTarget target,
 	context->target = target;
 
 	/*
-	 * If this partitioned table is in turn a partition, and it shares any
-	 * partition keys with its parent, then it's possible that the hierarchy
-	 * allows the parent a narrower range of values than some of its
-	 * partitions (particularly the default one).  This is normally not
-	 * useful, but it can be to prune the default partition.
+	 * For sub-partitioned tables there's a corner case where if the
+	 * sub-partitioned table shares any partition keys with its parent, then
+	 * it's possible that the partitioning hierarchy allows the parent
+	 * partition to only contain a narrower range of values than the
+	 * sub-partitioned table does.  In this case it is possible that we'd
+	 * include partitions that could not possibly have any tuples matching
+	 * 'clauses'.  The possibility of such a partition arrangement is perhaps
+	 * unlikely for non-default partitions, but it may be more likely in the
+	 * case of default partitions, so we'll add the parent partition table's
+	 * partition qual to the clause list in this case only.  This may result
+	 * in the default partition being eliminated.
 	 */
-	if (partition_bound_has_default(rel->boundinfo) && rel->partition_qual)
+	if (partition_bound_has_default(rel->boundinfo) &&
+		rel->partition_qual != NIL)
 	{
-		/* Make a copy to avoid modifying the passed-in List */
-		clauses = list_concat_copy(clauses, rel->partition_qual);
+		List	   *partqual = rel->partition_qual;
+
+		partqual = (List *) expression_planner((Expr *) partqual);
+
+		/* Fix Vars to have the desired varno */
+		if (rel->relid != 1)
+			ChangeVarNodes((Node *) partqual, 1, rel->relid, 0);
+
+		/* Use list_copy to avoid modifying the passed-in List */
+		clauses = list_concat(list_copy(clauses), partqual);
 	}
 
 	/* Down into the rabbit-hole. */
@@ -835,11 +848,10 @@ get_matching_partitions(PartitionPruneContext *context, List *pruning_steps)
  * the context's steps list.  Each step is assigned a step identifier, unique
  * even across recursive calls.
  *
- * If we find clauses that are mutually contradictory, or contradictory with
- * the partitioning constraint, or a pseudoconstant clause that contains
- * false, we set context->contradictory to true and return NIL (that is, no
- * pruning steps).  Caller should consider all partitions as pruned in that
- * case.
+ * If we find clauses that are mutually contradictory, or a pseudoconstant
+ * clause that contains false, we set context->contradictory to true and
+ * return NIL (that is, no pruning steps).  Caller should consider all
+ * partitions as pruned in that case.
  */
 static List *
 gen_partprune_steps_internal(GeneratePruningStepsContext *context,
@@ -852,25 +864,6 @@ gen_partprune_steps_internal(GeneratePruningStepsContext *context,
 	bool		generate_opsteps = false;
 	List	   *result = NIL;
 	ListCell   *lc;
-
-	/*
-	 * If this partitioned relation has a default partition and is itself
-	 * a partition (as evidenced by partition_qual being not NIL), we first
-	 * check if the clauses contradict the partition constraint.  If they do,
-	 * there's no need to generate any steps as it'd already be proven that no
-	 * partitions need to be scanned.
-	 *
-	 * This is a measure of last resort only to be used because the default
-	 * partition cannot be pruned using the steps generated from clauses that
-	 * contradict the parent's partition constraint; regular pruning, which is
-	 * cheaper, is sufficient when no default partition exists.
-	 */
-	if (partition_bound_has_default(context->rel->boundinfo) &&
-		predicate_refuted_by(context->rel->partition_qual, clauses, false))
-	{
-		context->contradictory = true;
-		return NIL;
-	}
 
 	memset(keyclauses, 0, sizeof(keyclauses));
 	foreach(lc, clauses)
@@ -948,15 +941,35 @@ gen_partprune_steps_internal(GeneratePruningStepsContext *context,
 					}
 					else
 					{
-						PartitionPruneStep *orstep;
-
 						/*
 						 * The arg didn't contain a clause matching this
 						 * partition key.  We cannot prune using such an arg.
 						 * To indicate that to the pruning code, we must
 						 * construct a dummy PartitionPruneStepCombine whose
 						 * source_stepids is set to an empty List.
+						 *
+						 * However, if we can prove using constraint exclusion
+						 * that the clause refutes the table's partition
+						 * constraint (if it's sub-partitioned), we need not
+						 * bother with that.  That is, we effectively ignore
+						 * this OR arm.
 						 */
+						List	   *partconstr = context->rel->partition_qual;
+						PartitionPruneStep *orstep;
+
+						if (partconstr)
+						{
+							partconstr = (List *)
+								expression_planner((Expr *) partconstr);
+							if (context->rel->relid != 1)
+								ChangeVarNodes((Node *) partconstr, 1,
+											   context->rel->relid, 0);
+							if (predicate_refuted_by(partconstr,
+													 list_make1(arg),
+													 false))
+								continue;
+						}
+
 						orstep = gen_prune_step_combine(context, NIL,
 														PARTPRUNE_COMBINE_UNION);
 						arg_stepids = lappend_int(arg_stepids, orstep->step_id);
@@ -1467,7 +1480,7 @@ gen_prune_steps_from_opexps(GeneratePruningStepsContext *context,
 														  pc->keyno,
 														  NULL,
 														  prefix);
-						opsteps = list_concat(opsteps, pc_steps);
+						opsteps = list_concat(opsteps, list_copy(pc_steps));
 					}
 				}
 				break;
@@ -1518,7 +1531,7 @@ gen_prune_steps_from_opexps(GeneratePruningStepsContext *context,
 					 * of expressions of different keys, which
 					 * get_steps_using_prefix will take care of for us.
 					 */
-					for_each_cell(lc1, eq_clauses, lc)
+					for_each_cell(lc1, lc)
 					{
 						pc = lfirst(lc1);
 
@@ -1538,7 +1551,7 @@ gen_prune_steps_from_opexps(GeneratePruningStepsContext *context,
 												   pc->keyno,
 												   nullkeys,
 												   prefix);
-						opsteps = list_concat(opsteps, pc_steps);
+						opsteps = list_concat(opsteps, list_copy(pc_steps));
 					}
 				}
 				break;
@@ -2109,7 +2122,7 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 
 		/*
 		 * Now generate a list of clauses, one for each array element, of the
-		 * form leftop saop_op elem_expr
+		 * form saop_leftop saop_op elem_expr
 		 */
 		elem_clauses = NIL;
 		foreach(lc1, elem_exprs)
@@ -2215,7 +2228,6 @@ get_steps_using_prefix(GeneratePruningStepsContext *context,
 										  step_lastcmpfn,
 										  step_lastkeyno,
 										  step_nullkeys,
-										  prefix,
 										  list_head(prefix),
 										  NIL, NIL);
 }
@@ -2227,7 +2239,6 @@ get_steps_using_prefix(GeneratePruningStepsContext *context,
  *		column that is less than the one for which we're currently generating
  *		steps (that is, step_lastkeyno)
  *
- * 'prefix' is the list of PartClauseInfos.
  * 'start' is where we should start iterating for the current invocation.
  * 'step_exprs' and 'step_cmpfns' each contains the expressions and cmpfns
  * we've generated so far from the clauses for the previous part keys.
@@ -2240,7 +2251,6 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 							   Oid step_lastcmpfn,
 							   int step_lastkeyno,
 							   Bitmapset *step_nullkeys,
-							   List *prefix,
 							   ListCell *start,
 							   List *step_exprs,
 							   List *step_cmpfns)
@@ -2266,7 +2276,7 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 		 * next_start to the ListCell of the first clause for the next
 		 * partition key.
 		 */
-		for_each_cell(lc, prefix, start)
+		for_each_cell(lc, start)
 		{
 			pc = lfirst(lc);
 
@@ -2275,7 +2285,7 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 		}
 		next_start = lc;
 
-		for_each_cell(lc, prefix, start)
+		for_each_cell(lc, start)
 		{
 			List	   *moresteps;
 
@@ -2309,7 +2319,6 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 													   step_lastcmpfn,
 													   step_lastkeyno,
 													   step_nullkeys,
-													   prefix,
 													   next_start,
 													   step_exprs,
 													   step_cmpfns);
@@ -2324,7 +2333,7 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 		 * till the end of the list.
 		 */
 		Assert(list_length(step_exprs) == cur_keyno);
-		for_each_cell(lc, prefix, start)
+		for_each_cell(lc, start)
 		{
 			PartClauseInfo *pc = lfirst(lc);
 			PartitionPruneStep *step;
@@ -3226,8 +3235,8 @@ perform_pruning_base_step(PartitionPruneContext *context,
 			values[keyno] = datum;
 			nvalues++;
 
-			lc1 = lnext(opstep->exprs, lc1);
-			lc2 = lnext(opstep->cmpfns, lc2);
+			lc1 = lnext(lc1);
+			lc2 = lnext(lc2);
 		}
 	}
 

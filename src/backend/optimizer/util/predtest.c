@@ -4,7 +4,7 @@
  *	  Routines to attempt to prove logical implications between predicate
  *	  expressions.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -59,7 +59,6 @@ typedef struct PredIterInfoData
 {
 	/* node-type-specific iteration state */
 	void	   *state;
-	List	   *state_list;
 	/* initialize to do the iteration */
 	void		(*startup_fn) (Node *clause, PredIterInfo info);
 	/* next-component iteration function */
@@ -906,8 +905,7 @@ predicate_classify(Node *clause, PredIterInfo info)
 static void
 list_startup_fn(Node *clause, PredIterInfo info)
 {
-	info->state_list = (List *) clause;
-	info->state = (void *) list_head(info->state_list);
+	info->state = (void *) list_head((List *) clause);
 }
 
 static Node *
@@ -919,7 +917,7 @@ list_next_fn(PredIterInfo info)
 	if (l == NULL)
 		return NULL;
 	n = lfirst(l);
-	info->state = (void *) lnext(info->state_list, l);
+	info->state = (void *) lnext(l);
 	return n;
 }
 
@@ -936,8 +934,7 @@ list_cleanup_fn(PredIterInfo info)
 static void
 boolexpr_startup_fn(Node *clause, PredIterInfo info)
 {
-	info->state_list = ((BoolExpr *) clause)->args;
-	info->state = (void *) list_head(info->state_list);
+	info->state = (void *) list_head(((BoolExpr *) clause)->args);
 }
 
 /*
@@ -1060,7 +1057,6 @@ arrayexpr_startup_fn(Node *clause, PredIterInfo info)
 
 	/* Initialize iteration variable to first member of ArrayExpr */
 	arrayexpr = (ArrayExpr *) lsecond(saop->args);
-	info->state_list = arrayexpr->elements;
 	state->next = list_head(arrayexpr->elements);
 }
 
@@ -1072,7 +1068,7 @@ arrayexpr_next_fn(PredIterInfo info)
 	if (state->next == NULL)
 		return NULL;
 	lsecond(state->opexpr.args) = lfirst(state->next);
-	state->next = lnext(info->state_list, state->next);
+	state->next = lnext(state->next);
 	return (Node *) &(state->opexpr);
 }
 

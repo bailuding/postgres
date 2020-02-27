@@ -4,7 +4,7 @@
  *	  fetch tuples from a GiST scan.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -17,11 +17,11 @@
 #include "access/genam.h"
 #include "access/gist_private.h"
 #include "access/relscan.h"
-#include "lib/pairingheap.h"
 #include "miscadmin.h"
-#include "pgstat.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "pgstat.h"
+#include "lib/pairingheap.h"
 #include "utils/float.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -74,7 +74,7 @@ gistkillitems(IndexScanDesc scan)
 
 	/*
 	 * Mark all killedItems as dead. We need no additional recheck, because,
-	 * if page was modified, curPageLSN must have changed.
+	 * if page was modified, pageLSN must have changed.
 	 */
 	for (i = 0; i < so->numKilled; i++)
 	{
@@ -384,11 +384,11 @@ gistScanPage(IndexScanDesc scan, GISTSearchItem *pageItem,
 
 	/*
 	 * Check if the page was deleted after we saw the downlink. There's
-	 * nothing of interest on a deleted page. Note that we must do this after
-	 * checking the NSN for concurrent splits! It's possible that the page
-	 * originally contained some tuples that are visible to us, but was split
-	 * so that all the visible tuples were moved to another page, and then
-	 * this page was deleted.
+	 * nothing of interest on a deleted page. Note that we must do this
+	 * after checking the NSN for concurrent splits! It's possible that
+	 * the page originally contained some tuples that are visible to us,
+	 * but was split so that all the visible tuples were moved to another
+	 * page, and then this page was deleted.
 	 */
 	if (GistPageIsDeleted(page))
 	{
@@ -683,7 +683,7 @@ gistgettuple(IndexScanDesc scan, ScanDirection dir)
 			}
 
 			/*
-			 * Check the last returned tuple and add it to killedItems if
+			 * Check the last returned tuple and add it to killitems if
 			 * necessary
 			 */
 			if (scan->kill_prior_tuple

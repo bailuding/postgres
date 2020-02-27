@@ -3,7 +3,7 @@
  * pg_proc.c
  *	  routines to support manipulation of the pg_proc relation
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -538,9 +538,11 @@ ProcedureCreate(const char *procedureName,
 			Assert(list_length(oldDefaults) == oldproc->pronargdefaults);
 
 			/* new list can have more defaults than old, advance over 'em */
-			newlc = list_nth_cell(parameterDefaults,
-								  list_length(parameterDefaults) -
-								  oldproc->pronargdefaults);
+			newlc = list_head(parameterDefaults);
+			for (i = list_length(parameterDefaults) - oldproc->pronargdefaults;
+				 i > 0;
+				 i--)
+				newlc = lnext(newlc);
 
 			foreach(oldlc, oldDefaults)
 			{
@@ -555,7 +557,7 @@ ProcedureCreate(const char *procedureName,
 							 errhint("Use %s %s first.",
 									 dropcmd,
 									 format_procedure(oldproc->oid))));
-				newlc = lnext(parameterDefaults, newlc);
+				newlc = lnext(newlc);
 			}
 		}
 
@@ -923,8 +925,6 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 			 * verify the result type.
 			 */
 			SQLFunctionParseInfoPtr pinfo;
-			Oid			rettype;
-			TupleDesc	rettupdesc;
 
 			/* But first, set up parameter information */
 			pinfo = prepare_sql_fn_parse_info(tuple, NULL, InvalidOid);
@@ -945,12 +945,9 @@ fmgr_sql_validator(PG_FUNCTION_ARGS)
 			}
 
 			check_sql_fn_statements(querytree_list);
-
-			(void) get_func_result_type(funcoid, &rettype, &rettupdesc);
-
-			(void) check_sql_fn_retval(querytree_list,
-									   rettype, rettupdesc,
-									   false, NULL);
+			(void) check_sql_fn_retval(funcoid, proc->prorettype,
+									   querytree_list,
+									   NULL, NULL);
 		}
 
 		error_context_stack = sqlerrcontext.previous;

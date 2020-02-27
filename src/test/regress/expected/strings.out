@@ -48,21 +48,17 @@ SELECT 'tricky' AS U&"\" UESCAPE '!';
 (1 row)
 
 SELECT U&'wrong: \061';
-ERROR:  invalid Unicode escape value
+ERROR:  invalid Unicode escape value at or near "\061'"
 LINE 1: SELECT U&'wrong: \061';
                          ^
 SELECT U&'wrong: \+0061';
-ERROR:  invalid Unicode escape value
+ERROR:  invalid Unicode escape value at or near "\+0061'"
 LINE 1: SELECT U&'wrong: \+0061';
                          ^
-SELECT U&'wrong: +0061' UESCAPE +;
-ERROR:  UESCAPE must be followed by a simple string literal at or near "+"
-LINE 1: SELECT U&'wrong: +0061' UESCAPE +;
-                                        ^
 SELECT U&'wrong: +0061' UESCAPE '+';
-ERROR:  invalid Unicode escape character at or near "'+'"
+ERROR:  invalid Unicode escape character at or near "+'"
 LINE 1: SELECT U&'wrong: +0061' UESCAPE '+';
-                                        ^
+                                         ^
 SET standard_conforming_strings TO off;
 SELECT U&'d\0061t\+000061' AS U&"d\0061t\+000061";
 ERROR:  unsafe use of string constant with Unicode escapes
@@ -414,56 +410,7 @@ SELECT SUBSTRING('abcdefg' FROM 'b(.*)f') AS "cde";
  cde
 (1 row)
 
--- Check behavior of SIMILAR TO, which uses largely the same regexp variant
-SELECT 'abcdefg' SIMILAR TO '_bcd%' AS true;
- true 
-------
- t
-(1 row)
-
-SELECT 'abcdefg' SIMILAR TO 'bcd%' AS false;
- false 
--------
- f
-(1 row)
-
-SELECT 'abcdefg' SIMILAR TO '_bcd#%' ESCAPE '#' AS false;
- false 
--------
- f
-(1 row)
-
-SELECT 'abcd%' SIMILAR TO '_bcd#%' ESCAPE '#' AS true;
- true 
-------
- t
-(1 row)
-
--- Postgres uses '\' as the default escape character, which is not per spec
-SELECT 'abcdefg' SIMILAR TO '_bcd\%' AS false;
- false 
--------
- f
-(1 row)
-
--- and an empty string to mean "no escape", which is also not per spec
-SELECT 'abcd\efg' SIMILAR TO '_bcd\%' ESCAPE '' AS true;
- true 
-------
- t
-(1 row)
-
--- these behaviors are per spec, though:
-SELECT 'abcdefg' SIMILAR TO '_bcd%' ESCAPE NULL AS null;
- null 
-------
- 
-(1 row)
-
-SELECT 'abcdefg' SIMILAR TO '_bcd#%' ESCAPE '##' AS error;
-ERROR:  invalid escape string
-HINT:  Escape string must be empty or one character.
--- Test back reference in regexp_replace
+-- PostgreSQL extension to allow using back reference in replace string;
 SELECT regexp_replace('1112223333', E'(\\d{3})(\\d{3})(\\d{4})', E'(\\1) \\2-\\3');
  regexp_replace 
 ----------------

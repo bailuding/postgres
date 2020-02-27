@@ -3,7 +3,7 @@
  * file_fdw.c
  *		  foreign-data wrapper for server-side flat files (or programs).
  *
- * Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/file_fdw/file_fdw.c
@@ -360,7 +360,8 @@ fileGetOptions(Oid foreigntableid,
 	ForeignServer *server;
 	ForeignDataWrapper *wrapper;
 	List	   *options;
-	ListCell   *lc;
+	ListCell   *lc,
+			   *prev;
 
 	/*
 	 * Extract options from FDW objects.  We ignore user mappings because
@@ -386,6 +387,7 @@ fileGetOptions(Oid foreigntableid,
 	 */
 	*filename = NULL;
 	*is_program = false;
+	prev = NULL;
 	foreach(lc, options)
 	{
 		DefElem    *def = (DefElem *) lfirst(lc);
@@ -393,16 +395,17 @@ fileGetOptions(Oid foreigntableid,
 		if (strcmp(def->defname, "filename") == 0)
 		{
 			*filename = defGetString(def);
-			options = foreach_delete_current(options, lc);
+			options = list_delete_cell(options, lc, prev);
 			break;
 		}
 		else if (strcmp(def->defname, "program") == 0)
 		{
 			*filename = defGetString(def);
 			*is_program = true;
-			options = foreach_delete_current(options, lc);
+			options = list_delete_cell(options, lc, prev);
 			break;
 		}
+		prev = lc;
 	}
 
 	/*

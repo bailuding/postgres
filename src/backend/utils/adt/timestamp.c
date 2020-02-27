@@ -3,7 +3,7 @@
  * timestamp.c
  *	  Functions for the built-in SQL types "timestamp" and "interval".
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -70,6 +70,7 @@ typedef struct
 
 static TimeOffset time2t(const int hour, const int min, const int sec, const fsec_t fsec);
 static Timestamp dt2local(Timestamp dt, int timezone);
+static void AdjustTimestampForTypmod(Timestamp *time, int32 typmod);
 static void AdjustIntervalForTypmod(Interval *interval, int32 typmod);
 static TimestampTz timestamp2timestamptz(Timestamp timestamp);
 static Timestamp timestamptz2timestamp(TimestampTz timestamp);
@@ -329,11 +330,11 @@ timestamp_scale(PG_FUNCTION_ARGS)
 }
 
 /*
- * AdjustTimestampForTypmodError --- round off a timestamp to suit given typmod
+ * AdjustTimestampForTypmod --- round off a timestamp to suit given typmod
  * Works for either timestamp or timestamptz.
  */
-bool
-AdjustTimestampForTypmodError(Timestamp *time, int32 typmod, bool *error)
+static void
+AdjustTimestampForTypmod(Timestamp *time, int32 typmod)
 {
 	static const int64 TimestampScales[MAX_TIMESTAMP_PRECISION + 1] = {
 		INT64CONST(1000000),
@@ -359,18 +360,10 @@ AdjustTimestampForTypmodError(Timestamp *time, int32 typmod, bool *error)
 		&& (typmod != -1) && (typmod != MAX_TIMESTAMP_PRECISION))
 	{
 		if (typmod < 0 || typmod > MAX_TIMESTAMP_PRECISION)
-		{
-			if (error)
-			{
-				*error = true;
-				return false;
-			}
-
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("timestamp(%d) precision must be between %d and %d",
 							typmod, 0, MAX_TIMESTAMP_PRECISION)));
-		}
 
 		if (*time >= INT64CONST(0))
 		{
@@ -383,15 +376,8 @@ AdjustTimestampForTypmodError(Timestamp *time, int32 typmod, bool *error)
 					  * TimestampScales[typmod]);
 		}
 	}
-
-	return true;
 }
 
-void
-AdjustTimestampForTypmod(Timestamp *time, int32 typmod)
-{
-	(void) AdjustTimestampForTypmodError(time, typmod, NULL);
-}
 
 /* timestamptz_in()
  * Convert a string to internal form.
@@ -4373,7 +4359,6 @@ date2isoweek(int year, int mon, int mday)
 /* date2isoyear()
  *
  *	Returns ISO 8601 year number.
- *	Note: zero or negative results follow the year-zero-exists convention.
  */
 int
 date2isoyear(int year, int mon, int mday)
@@ -4648,19 +4633,24 @@ timestamp_part(PG_FUNCTION_ARGS)
 
 			case DTK_ISOYEAR:
 				result = date2isoyear(tm->tm_year, tm->tm_mon, tm->tm_mday);
-				/* Adjust BC years */
-				if (result <= 0)
-					result -= 1;
 				break;
 
 			case DTK_DOW:
 			case DTK_ISODOW:
+				if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("timestamp out of range")));
 				result = j2day(date2j(tm->tm_year, tm->tm_mon, tm->tm_mday));
 				if (val == DTK_ISODOW && result == 0)
 					result = 7;
 				break;
 
 			case DTK_DOY:
+				if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("timestamp out of range")));
 				result = (date2j(tm->tm_year, tm->tm_mon, tm->tm_mday)
 						  - date2j(tm->tm_year, 1, 1) + 1);
 				break;
@@ -4847,19 +4837,24 @@ timestamptz_part(PG_FUNCTION_ARGS)
 
 			case DTK_ISOYEAR:
 				result = date2isoyear(tm->tm_year, tm->tm_mon, tm->tm_mday);
-				/* Adjust BC years */
-				if (result <= 0)
-					result -= 1;
 				break;
 
 			case DTK_DOW:
 			case DTK_ISODOW:
+				if (timestamp2tm(timestamp, &tz, tm, &fsec, NULL, NULL) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("timestamp out of range")));
 				result = j2day(date2j(tm->tm_year, tm->tm_mon, tm->tm_mday));
 				if (val == DTK_ISODOW && result == 0)
 					result = 7;
 				break;
 
 			case DTK_DOY:
+				if (timestamp2tm(timestamp, &tz, tm, &fsec, NULL, NULL) != 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+							 errmsg("timestamp out of range")));
 				result = (date2j(tm->tm_year, tm->tm_mon, tm->tm_mday)
 						  - date2j(tm->tm_year, 1, 1) + 1);
 				break;
@@ -5178,15 +5173,8 @@ timestamp_timestamptz(PG_FUNCTION_ARGS)
 	PG_RETURN_TIMESTAMPTZ(timestamp2timestamptz(timestamp));
 }
 
-/*
- * Convert timestamp to timestamp with time zone.
- *
- * On overflow error is thrown if 'overflow' is NULL.  Otherwise, '*overflow'
- * is set to -1 (+1) when result value exceed lower (upper) boundary and zero
- * returned.
- */
-TimestampTz
-timestamp2timestamptz_opt_overflow(Timestamp timestamp, int *overflow)
+static TimestampTz
+timestamp2timestamptz(Timestamp timestamp)
 {
 	TimestampTz result;
 	struct pg_tm tt,
@@ -5195,45 +5183,23 @@ timestamp2timestamptz_opt_overflow(Timestamp timestamp, int *overflow)
 	int			tz;
 
 	if (TIMESTAMP_NOT_FINITE(timestamp))
-		return timestamp;
-
-	if (!timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL))
+		result = timestamp;
+	else
 	{
+		if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+					 errmsg("timestamp out of range")));
+
 		tz = DetermineTimeZoneOffset(tm, session_timezone);
 
-		result = dt2local(timestamp, -tz);
-
-		if (IS_VALID_TIMESTAMP(result))
-		{
-			return result;
-		}
-		else if (overflow)
-		{
-			if (result < MIN_TIMESTAMP)
-				*overflow = -1;
-			else
-			{
-				Assert(result >= END_TIMESTAMP);
-				*overflow = 1;
-			}
-			return (TimestampTz) 0;
-		}
+		if (tm2timestamp(tm, fsec, &tz, &result) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
+					 errmsg("timestamp out of range")));
 	}
 
-	ereport(ERROR,
-			(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-			 errmsg("timestamp out of range")));
-
-	return 0;
-}
-
-/*
- * Single-argument version of timestamp2timestamptz_opt_overflow().
- */
-static TimestampTz
-timestamp2timestamptz(Timestamp timestamp)
-{
-	return timestamp2timestamptz_opt_overflow(timestamp, NULL);
+	return result;
 }
 
 /* timestamptz_timestamp()
@@ -5459,7 +5425,8 @@ generate_series_timestamp(PG_FUNCTION_ARGS)
 		timestamp_cmp_internal(result, fctx->finish) >= 0)
 	{
 		/* increment current in preparation for next iteration */
-		fctx->current = DatumGetTimestamp(DirectFunctionCall2(timestamp_pl_interval,
+		fctx->current = DatumGetTimestamp(
+										  DirectFunctionCall2(timestamp_pl_interval,
 															  TimestampGetDatum(fctx->current),
 															  PointerGetDatum(&fctx->step)));
 
@@ -5539,7 +5506,8 @@ generate_series_timestamptz(PG_FUNCTION_ARGS)
 		timestamp_cmp_internal(result, fctx->finish) >= 0)
 	{
 		/* increment current in preparation for next iteration */
-		fctx->current = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_pl_interval,
+		fctx->current = DatumGetTimestampTz(
+											DirectFunctionCall2(timestamptz_pl_interval,
 																TimestampTzGetDatum(fctx->current),
 																PointerGetDatum(&fctx->step)));
 

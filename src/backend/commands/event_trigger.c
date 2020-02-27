@@ -3,7 +3,7 @@
  * event_trigger.c
  *	  PostgreSQL EVENT TRIGGER support code.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -33,12 +33,11 @@
 #include "commands/extension.h"
 #include "commands/trigger.h"
 #include "funcapi.h"
-#include "lib/ilist.h"
-#include "miscadmin.h"
 #include "parser/parse_func.h"
 #include "pgstat.h"
+#include "lib/ilist.h"
+#include "miscadmin.h"
 #include "tcop/deparse_utility.h"
-#include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/evtcache.h"
@@ -47,6 +46,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+#include "tcop/utility.h"
 
 typedef struct EventTriggerQueryState
 {
@@ -171,6 +171,7 @@ CreateEventTrigger(CreateEventTrigStmt *stmt)
 	HeapTuple	tuple;
 	Oid			funcoid;
 	Oid			funcrettype;
+	Oid			fargtypes[1];	/* dummy */
 	Oid			evtowner = GetUserId();
 	ListCell   *lc;
 	List	   *tags = NULL;
@@ -236,7 +237,7 @@ CreateEventTrigger(CreateEventTrigStmt *stmt)
 						stmt->trigname)));
 
 	/* Find and validate the trigger function. */
-	funcoid = LookupFuncName(stmt->funcname, 0, NULL, false);
+	funcoid = LookupFuncName(stmt->funcname, 0, fargtypes, false);
 	funcrettype = get_func_rettype(funcoid);
 	if (funcrettype != EVTTRIGGEROID)
 		ereport(ERROR,
@@ -933,11 +934,13 @@ EventTriggerSQLDrop(Node *parsetree)
 	{
 		EventTriggerInvoke(runlist, &trigdata);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		currentEventTriggerState->in_sql_drop = false;
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+	currentEventTriggerState->in_sql_drop = false;
 
 	/* Cleanup. */
 	list_free(runlist);
@@ -1004,12 +1007,16 @@ EventTriggerTableRewrite(Node *parsetree, Oid tableOid, int reason)
 	{
 		EventTriggerInvoke(runlist, &trigdata);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		currentEventTriggerState->table_rewrite_oid = InvalidOid;
 		currentEventTriggerState->table_rewrite_reason = 0;
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	currentEventTriggerState->table_rewrite_oid = InvalidOid;
+	currentEventTriggerState->table_rewrite_reason = 0;
 
 	/* Cleanup. */
 	list_free(runlist);
@@ -2163,7 +2170,8 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 				/* command tag */
 				values[i++] = CStringGetTextDatum(CreateCommandTag(cmd->parsetree));
 				/* object_type */
-				values[i++] = CStringGetTextDatum(stringify_adefprivs_objtype(cmd->d.defprivs.objtype));
+				values[i++] = CStringGetTextDatum(stringify_adefprivs_objtype(
+																			  cmd->d.defprivs.objtype));
 				/* schema */
 				nulls[i++] = true;
 				/* identity */
@@ -2185,7 +2193,8 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 				values[i++] = CStringGetTextDatum(cmd->d.grant.istmt->is_grant ?
 												  "GRANT" : "REVOKE");
 				/* object_type */
-				values[i++] = CStringGetTextDatum(stringify_grant_objtype(cmd->d.grant.istmt->objtype));
+				values[i++] = CStringGetTextDatum(stringify_grant_objtype(
+																		  cmd->d.grant.istmt->objtype));
 				/* schema */
 				nulls[i++] = true;
 				/* identity */

@@ -111,15 +111,6 @@ SELECT count(*) FROM test_tsvector WHERE a @@ any ('{wr,qh}');
 SELECT count(*) FROM test_tsvector WHERE a @@ 'no_such_lexeme';
 SELECT count(*) FROM test_tsvector WHERE a @@ '!no_such_lexeme';
 
--- Test optimization of non-empty GIN_SEARCH_MODE_ALL queries
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM test_tsvector WHERE a @@ '!qh';
-SELECT count(*) FROM test_tsvector WHERE a @@ '!qh';
-
-EXPLAIN (COSTS OFF)
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wr' AND a @@ '!qh';
-SELECT count(*) FROM test_tsvector WHERE a @@ 'wr' AND a @@ '!qh';
-
 RESET enable_seqscan;
 
 INSERT INTO test_tsvector VALUES ('???', 'DFG:1A,2B,6C,10 FGH');
@@ -528,17 +519,6 @@ SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
 INSERT INTO test_tsvector (t) VALUES ('345 qwerty');
 
 SELECT count(*) FROM test_tsvector WHERE a @@ to_tsquery('345&qwerty');
-
--- Test inlining of immutable constant functions
-
--- to_tsquery(text) is not immutable, so it won't be inlined
-explain (costs off)
-select * from test_tsquery, to_tsquery('new') q where txtsample @@ q;
-
--- to_tsquery(regconfig, text) is an immutable function.
--- That allows us to get rid of using function scan and join at all.
-explain (costs off)
-select * from test_tsquery, to_tsquery('english', 'new') q where txtsample @@ q;
 
 -- test finding items in GIN's pending list
 create temp table pendtest (ts tsvector);

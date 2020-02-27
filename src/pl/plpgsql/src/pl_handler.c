@@ -3,7 +3,7 @@
  * pl_handler.c		- Handler for the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,12 +20,14 @@
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
-#include "plpgsql.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 #include "utils/varlena.h"
+
+#include "plpgsql.h"
+
 
 static bool plpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source);
 static void plpgsql_extra_warnings_assign_hook(const char *newvalue, void *extra);
@@ -264,13 +266,18 @@ plpgsql_call_handler(PG_FUNCTION_ARGS)
 		else
 			retval = plpgsql_exec_function(func, fcinfo, NULL, !nonatomic);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
-		/* Decrement use-count, restore cur_estate */
+		/* Decrement use-count, restore cur_estate, and propagate error */
 		func->use_count--;
 		func->cur_estate = save_cur_estate;
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	func->use_count--;
+
+	func->cur_estate = save_cur_estate;
 
 	/*
 	 * Disconnect from SPI manager

@@ -8,7 +8,7 @@
  * and only the receiver may receive.  This is intended to allow a user
  * backend to communicate with worker backends that it has registered.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/storage/ipc/shm_mq.c
@@ -1251,7 +1251,7 @@ shm_mq_inc_bytes_written(shm_mq *mq, Size n)
 						pg_atomic_read_u64(&mq->mq_bytes_written) + n);
 }
 
-/* Shim for on_dsm_detach callback. */
+/* Shim for on_dsm_callback. */
 static void
 shm_mq_detach_callback(dsm_segment *seg, Datum arg)
 {

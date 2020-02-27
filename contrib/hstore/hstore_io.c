@@ -7,17 +7,18 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
-#include "common/jsonapi.h"
 #include "funcapi.h"
-#include "hstore.h"
 #include "lib/stringinfo.h"
 #include "libpq/pqformat.h"
 #include "utils/builtins.h"
 #include "utils/json.h"
+#include "utils/jsonapi.h"
 #include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/typcache.h"
+
+#include "hstore.h"
 
 PG_MODULE_MAGIC;
 
@@ -322,11 +323,6 @@ hstoreUniquePairs(Pairs *a, int32 l, int32 *buflen)
 	}
 
 	qsort((void *) a, l, sizeof(Pairs), comparePairs);
-
-	/*
-	 * We can't use qunique here because we have some clean-up code to run on
-	 * removed elements.
-	 */
 	ptr = a + 1;
 	res = a;
 	while (ptr - a < l)

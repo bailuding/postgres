@@ -3,7 +3,7 @@
  * parse_expr.c
  *	  handle expressions in parser
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -22,7 +22,6 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "parser/analyze.h"
-#include "parser/parse_agg.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_collate.h"
@@ -32,11 +31,13 @@
 #include "parser/parse_relation.h"
 #include "parser/parse_target.h"
 #include "parser/parse_type.h"
+#include "parser/parse_agg.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/lsyscache.h"
 #include "utils/timestamp.h"
 #include "utils/xml.h"
+
 
 /* GUC parameters */
 bool		operator_precedence_warning = false;
@@ -114,9 +115,8 @@ static Node *transformXmlSerialize(ParseState *pstate, XmlSerialize *xs);
 static Node *transformBooleanTest(ParseState *pstate, BooleanTest *b);
 static Node *transformCurrentOfExpr(ParseState *pstate, CurrentOfExpr *cexpr);
 static Node *transformColumnRef(ParseState *pstate, ColumnRef *cref);
-static Node *transformWholeRowRef(ParseState *pstate,
-								  ParseNamespaceItem *nsitem,
-								  int sublevels_up, int location);
+static Node *transformWholeRowRef(ParseState *pstate, RangeTblEntry *rte,
+								  int location);
 static Node *transformIndirection(ParseState *pstate, A_Indirection *ind);
 static Node *transformTypeCast(ParseState *pstate, TypeCast *tc);
 static Node *transformCollateClause(ParseState *pstate, CollateClause *c);
@@ -511,7 +511,7 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 	char	   *nspname = NULL;
 	char	   *relname = NULL;
 	char	   *colname = NULL;
-	ParseNamespaceItem *nsitem;
+	RangeTblEntry *rte;
 	int			levels_up;
 	enum
 	{
@@ -654,11 +654,11 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 					 * PostQUEL-inspired syntax.  The preferred form now is
 					 * "rel.*".
 					 */
-					nsitem = refnameNamespaceItem(pstate, NULL, colname,
-												  cref->location,
-												  &levels_up);
-					if (nsitem)
-						node = transformWholeRowRef(pstate, nsitem, levels_up,
+					rte = refnameRangeTblEntry(pstate, NULL, colname,
+											   cref->location,
+											   &levels_up);
+					if (rte)
+						node = transformWholeRowRef(pstate, rte,
 													cref->location);
 				}
 				break;
@@ -671,11 +671,11 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 				Assert(IsA(field1, String));
 				relname = strVal(field1);
 
-				/* Locate the referenced nsitem */
-				nsitem = refnameNamespaceItem(pstate, nspname, relname,
-											  cref->location,
-											  &levels_up);
-				if (nsitem == NULL)
+				/* Locate the referenced RTE */
+				rte = refnameRangeTblEntry(pstate, nspname, relname,
+										   cref->location,
+										   &levels_up);
+				if (rte == NULL)
 				{
 					crerr = CRERR_NO_RTE;
 					break;
@@ -684,22 +684,20 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 				/* Whole-row reference? */
 				if (IsA(field2, A_Star))
 				{
-					node = transformWholeRowRef(pstate, nsitem, levels_up,
-												cref->location);
+					node = transformWholeRowRef(pstate, rte, cref->location);
 					break;
 				}
 
 				Assert(IsA(field2, String));
 				colname = strVal(field2);
 
-				/* Try to identify as a column of the nsitem */
-				node = scanNSItemForColumn(pstate, nsitem, levels_up, colname,
-										   cref->location);
+				/* Try to identify as a column of the RTE */
+				node = scanRTEForColumn(pstate, rte, colname, cref->location,
+										0, NULL);
 				if (node == NULL)
 				{
 					/* Try it as a function call on the whole row */
-					node = transformWholeRowRef(pstate, nsitem, levels_up,
-												cref->location);
+					node = transformWholeRowRef(pstate, rte, cref->location);
 					node = ParseFuncOrColumn(pstate,
 											 list_make1(makeString(colname)),
 											 list_make1(node),
@@ -721,11 +719,11 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 				Assert(IsA(field2, String));
 				relname = strVal(field2);
 
-				/* Locate the referenced nsitem */
-				nsitem = refnameNamespaceItem(pstate, nspname, relname,
-											  cref->location,
-											  &levels_up);
-				if (nsitem == NULL)
+				/* Locate the referenced RTE */
+				rte = refnameRangeTblEntry(pstate, nspname, relname,
+										   cref->location,
+										   &levels_up);
+				if (rte == NULL)
 				{
 					crerr = CRERR_NO_RTE;
 					break;
@@ -734,22 +732,20 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 				/* Whole-row reference? */
 				if (IsA(field3, A_Star))
 				{
-					node = transformWholeRowRef(pstate, nsitem, levels_up,
-												cref->location);
+					node = transformWholeRowRef(pstate, rte, cref->location);
 					break;
 				}
 
 				Assert(IsA(field3, String));
 				colname = strVal(field3);
 
-				/* Try to identify as a column of the nsitem */
-				node = scanNSItemForColumn(pstate, nsitem, levels_up, colname,
-										   cref->location);
+				/* Try to identify as a column of the RTE */
+				node = scanRTEForColumn(pstate, rte, colname, cref->location,
+										0, NULL);
 				if (node == NULL)
 				{
 					/* Try it as a function call on the whole row */
-					node = transformWholeRowRef(pstate, nsitem, levels_up,
-												cref->location);
+					node = transformWholeRowRef(pstate, rte, cref->location);
 					node = ParseFuncOrColumn(pstate,
 											 list_make1(makeString(colname)),
 											 list_make1(node),
@@ -784,11 +780,11 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 					break;
 				}
 
-				/* Locate the referenced nsitem */
-				nsitem = refnameNamespaceItem(pstate, nspname, relname,
-											  cref->location,
-											  &levels_up);
-				if (nsitem == NULL)
+				/* Locate the referenced RTE */
+				rte = refnameRangeTblEntry(pstate, nspname, relname,
+										   cref->location,
+										   &levels_up);
+				if (rte == NULL)
 				{
 					crerr = CRERR_NO_RTE;
 					break;
@@ -797,22 +793,20 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 				/* Whole-row reference? */
 				if (IsA(field4, A_Star))
 				{
-					node = transformWholeRowRef(pstate, nsitem, levels_up,
-												cref->location);
+					node = transformWholeRowRef(pstate, rte, cref->location);
 					break;
 				}
 
 				Assert(IsA(field4, String));
 				colname = strVal(field4);
 
-				/* Try to identify as a column of the nsitem */
-				node = scanNSItemForColumn(pstate, nsitem, levels_up, colname,
-										   cref->location);
+				/* Try to identify as a column of the RTE */
+				node = scanRTEForColumn(pstate, rte, colname, cref->location,
+										0, NULL);
 				if (node == NULL)
 				{
 					/* Try it as a function call on the whole row */
-					node = transformWholeRowRef(pstate, nsitem, levels_up,
-												cref->location);
+					node = transformWholeRowRef(pstate, rte, cref->location);
 					node = ParseFuncOrColumn(pstate,
 											 list_make1(makeString(colname)),
 											 list_make1(node),
@@ -2265,6 +2259,7 @@ transformRowExpr(ParseState *pstate, RowExpr *r, bool allowDefault)
 	RowExpr    *newr;
 	char		fname[16];
 	int			fnum;
+	ListCell   *lc;
 
 	newr = makeNode(RowExpr);
 
@@ -2278,9 +2273,10 @@ transformRowExpr(ParseState *pstate, RowExpr *r, bool allowDefault)
 
 	/* ROW() has anonymous columns, so invent some field names */
 	newr->colnames = NIL;
-	for (fnum = 1; fnum <= list_length(newr->args); fnum++)
+	fnum = 1;
+	foreach(lc, newr->args)
 	{
-		snprintf(fname, sizeof(fname), "f%d", fnum);
+		snprintf(fname, sizeof(fname), "f%d", fnum++);
 		newr->colnames = lappend(newr->colnames, makeString(pstrdup(fname)));
 	}
 
@@ -2655,9 +2651,14 @@ transformBooleanTest(ParseState *pstate, BooleanTest *b)
 static Node *
 transformCurrentOfExpr(ParseState *pstate, CurrentOfExpr *cexpr)
 {
+	int			sublevels_up;
+
 	/* CURRENT OF can only appear at top level of UPDATE/DELETE */
-	Assert(pstate->p_target_nsitem != NULL);
-	cexpr->cvarno = pstate->p_target_nsitem->p_rtindex;
+	Assert(pstate->p_target_rangetblentry != NULL);
+	cexpr->cvarno = RTERangeTablePosn(pstate,
+									  pstate->p_target_rangetblentry,
+									  &sublevels_up);
+	Assert(sublevels_up == 0);
 
 	/*
 	 * Check to see if the cursor name matches a parameter of type REFCURSOR.
@@ -2705,10 +2706,14 @@ transformCurrentOfExpr(ParseState *pstate, CurrentOfExpr *cexpr)
  * Construct a whole-row reference to represent the notation "relation.*".
  */
 static Node *
-transformWholeRowRef(ParseState *pstate, ParseNamespaceItem *nsitem,
-					 int sublevels_up, int location)
+transformWholeRowRef(ParseState *pstate, RangeTblEntry *rte, int location)
 {
 	Var		   *result;
+	int			vnum;
+	int			sublevels_up;
+
+	/* Find the RTE's rangetable location */
+	vnum = RTERangeTablePosn(pstate, rte, &sublevels_up);
 
 	/*
 	 * Build the appropriate referencing node.  Note that if the RTE is a
@@ -2718,14 +2723,13 @@ transformWholeRowRef(ParseState *pstate, ParseNamespaceItem *nsitem,
 	 * historically.  One argument for it is that "rel" and "rel.*" mean the
 	 * same thing for composite relations, so why not for scalar functions...
 	 */
-	result = makeWholeRowVar(nsitem->p_rte, nsitem->p_rtindex,
-							 sublevels_up, true);
+	result = makeWholeRowVar(rte, vnum, sublevels_up, true);
 
 	/* location is not filled in by makeWholeRowVar */
 	result->location = location;
 
 	/* mark relation as requiring whole-row SELECT access */
-	markVarForSelectPriv(pstate, result, nsitem->p_rte);
+	markVarForSelectPriv(pstate, result, rte);
 
 	return (Node *) result;
 }

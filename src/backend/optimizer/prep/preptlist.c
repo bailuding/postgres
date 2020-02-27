@@ -29,7 +29,7 @@
  * that because it's faster in typical non-inherited cases.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -47,10 +47,11 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/prep.h"
 #include "optimizer/tlist.h"
-#include "parser/parse_coerce.h"
 #include "parser/parsetree.h"
+#include "parser/parse_coerce.h"
 #include "rewrite/rewriteHandler.h"
 #include "utils/rel.h"
+
 
 static List *expand_targetlist(List *tlist, int command_type,
 							   Index result_relation, Relation rel);
@@ -284,7 +285,7 @@ expand_targetlist(List *tlist, int command_type,
 			if (!old_tle->resjunk && old_tle->resno == attrno)
 			{
 				new_tle = old_tle;
-				tlist_item = lnext(tlist, tlist_item);
+				tlist_item = lnext(tlist_item);
 			}
 		}
 
@@ -409,7 +410,7 @@ expand_targetlist(List *tlist, int command_type,
 		}
 		new_tlist = lappend(new_tlist, old_tle);
 		attrno++;
-		tlist_item = lnext(tlist, tlist_item);
+		tlist_item = lnext(tlist_item);
 	}
 
 	return new_tlist;

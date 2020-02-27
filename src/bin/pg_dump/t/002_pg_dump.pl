@@ -522,8 +522,7 @@ my %tests = (
 						 OPERATOR 4 >=(bigint,int4),
 						 OPERATOR 5 >(bigint,int4),
 						 FUNCTION 1 (int4, int4) btint4cmp(int4,int4),
-						 FUNCTION 2 (int4, int4) btint4sortsupport(internal),
-						 FUNCTION 4 (int4, int4) btequalimage(oid);',
+						 FUNCTION 2 (int4, int4) btint4sortsupport(internal);',
 		regexp => qr/^
 			\QALTER OPERATOR FAMILY dump_test.op_family USING btree ADD\E\n\s+
 			\QOPERATOR 1 <(bigint,integer) ,\E\n\s+
@@ -532,8 +531,7 @@ my %tests = (
 			\QOPERATOR 4 >=(bigint,integer) ,\E\n\s+
 			\QOPERATOR 5 >(bigint,integer) ,\E\n\s+
 			\QFUNCTION 1 (integer, integer) btint4cmp(integer,integer) ,\E\n\s+
-			\QFUNCTION 2 (integer, integer) btint4sortsupport(internal) ,\E\n\s+
-			\QFUNCTION 4 (integer, integer) btequalimage(oid);\E
+			\QFUNCTION 2 (integer, integer) btint4sortsupport(internal);\E
 			/xm,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
@@ -1378,8 +1376,8 @@ my %tests = (
 	'CREATE COLLATION test0 FROM "C"' => {
 		create_order => 76,
 		create_sql   => 'CREATE COLLATION test0 FROM "C";',
-		regexp       =>
-		  qr/CREATE COLLATION public.test0 \(provider = libc, locale = 'C'(, version = '[^']*')?\);/m,
+		regexp       => qr/^
+		  \QCREATE COLLATION public.test0 (provider = libc, locale = 'C');\E/xm,
 		collation => 1,
 		like      => { %full_runs, section_pre_data => 1, },
 	},
@@ -1406,15 +1404,6 @@ my %tests = (
 		regexp       => qr/^
 			\QCREATE DATABASE dump_test WITH TEMPLATE = template0 \E
 			.+;/xm,
-		like => { pg_dumpall_dbprivs => 1, },
-	},
-
-	"CREATE DATABASE dump_test2 LOCALE = 'C'" => {
-		create_order => 47,
-		create_sql   => "CREATE DATABASE dump_test2 LOCALE = 'C' TEMPLATE = template0;",
-		regexp       => qr/^
-			\QCREATE DATABASE dump_test2 \E.*\QLOCALE = 'C';\E
-			/xm,
 		like => { pg_dumpall_dbprivs => 1, },
 	},
 
@@ -1556,8 +1545,7 @@ my %tests = (
 						 OPERATOR 4 >=(bigint,bigint),
 						 OPERATOR 5 >(bigint,bigint),
 						 FUNCTION 1 btint8cmp(bigint,bigint),
-						 FUNCTION 2 btint8sortsupport(internal),
-						 FUNCTION 4 btequalimage(oid);',
+						 FUNCTION 2 btint8sortsupport(internal);',
 		regexp => qr/^
 			\QCREATE OPERATOR CLASS dump_test.op_class\E\n\s+
 			\QFOR TYPE bigint USING btree FAMILY dump_test.op_family AS\E\n\s+
@@ -1567,8 +1555,7 @@ my %tests = (
 			\QOPERATOR 4 >=(bigint,bigint) ,\E\n\s+
 			\QOPERATOR 5 >(bigint,bigint) ,\E\n\s+
 			\QFUNCTION 1 (bigint, bigint) btint8cmp(bigint,bigint) ,\E\n\s+
-			\QFUNCTION 2 (bigint, bigint) btint8sortsupport(internal) ,\E\n\s+
-			\QFUNCTION 4 (bigint, bigint) btequalimage(oid);\E
+			\QFUNCTION 2 (bigint, bigint) btint8sortsupport(internal);\E
 			/xm,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
@@ -2381,32 +2368,6 @@ my %tests = (
 		},
 	},
 
-	'Creation of row-level trigger in partitioned table' => {
-		create_order => 92,
-		create_sql   => 'CREATE TRIGGER test_trigger
-		   AFTER INSERT ON dump_test.measurement
-		   FOR EACH ROW EXECUTE PROCEDURE dump_test.trigger_func()',
-		regexp => qr/^
-			\QCREATE TRIGGER test_trigger AFTER INSERT ON dump_test.measurement \E
-			\QFOR EACH ROW \E
-			\QEXECUTE FUNCTION dump_test.trigger_func();\E
-			/xm,
-		like => {
-			%full_runs, %dump_test_schema_runs, section_post_data => 1,
-		},
-		unlike => {
-			exclude_dump_test_schema => 1,
-		},
-	},
-
-	# this shouldn't ever get emitted
-	'Creation of row-level trigger in partition' => {
-		regexp => qr/^
-			\QCREATE TRIGGER test_trigger AFTER INSERT ON dump_test_second_schema.measurement\E
-			/xm,
-		like => {},
-	},
-
 	'CREATE TABLE test_fourth_table_zero_col' => {
 		create_order => 6,
 		create_sql   => 'CREATE TABLE dump_test.test_fourth_table (
@@ -2566,17 +2527,6 @@ my %tests = (
 							(ndistinct) ON col1, col2 FROM dump_test.test_fifth_table',
 		regexp => qr/^
 			\QCREATE STATISTICS dump_test.test_ext_stats_opts (ndistinct) ON col1, col2 FROM dump_test.test_fifth_table;\E
-		    /xms,
-		like =>
-		  { %full_runs, %dump_test_schema_runs, section_post_data => 1, },
-		unlike => { exclude_dump_test_schema => 1, },
-	},
-
-	'ALTER STATISTICS extended_stats_options' => {
-		create_order => 98,
-		create_sql   => 'ALTER STATISTICS dump_test.test_ext_stats_opts SET STATISTICS 1000',
-		regexp => qr/^
-			\QALTER STATISTICS dump_test.test_ext_stats_opts SET STATISTICS 1000;\E
 		    /xms,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_post_data => 1, },

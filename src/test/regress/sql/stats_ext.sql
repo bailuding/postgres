@@ -68,20 +68,10 @@ INSERT INTO ab1 SELECT a, a%23 FROM generate_series(1, 1000) a;
 CREATE STATISTICS ab1_a_b_stats ON a, b FROM ab1;
 ANALYZE ab1;
 ALTER TABLE ab1 ALTER a SET STATISTICS -1;
--- setting statistics target 0 skips the statistics, without printing any message, so check catalog
-ALTER STATISTICS ab1_a_b_stats SET STATISTICS 0;
-ANALYZE ab1;
-SELECT stxname, stxdndistinct, stxddependencies, stxdmcv
-  FROM pg_statistic_ext s, pg_statistic_ext_data d
- WHERE s.stxname = 'ab1_a_b_stats'
-   AND d.stxoid = s.oid;
-ALTER STATISTICS ab1_a_b_stats SET STATISTICS -1;
 -- partial analyze doesn't build stats either
 ANALYZE ab1 (a);
 ANALYZE ab1;
 DROP TABLE ab1;
-ALTER STATISTICS ab1_a_b_stats SET STATISTICS 0;
-ALTER STATISTICS IF EXISTS ab1_a_b_stats SET STATISTICS 0;
 
 -- Ensure we can build statistics for tables with inheritance.
 CREATE TABLE ab1 (a INTEGER, b INTEGER);
@@ -166,9 +156,6 @@ SELECT s.stxkind, d.stxdndistinct
   FROM pg_statistic_ext s, pg_statistic_ext_data d
  WHERE s.stxrelid = 'ndistinct'::regclass
    AND d.stxoid = s.oid;
-
--- minor improvement, make sure the ctid does not break the matching
-SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY ctid, a, b');
 
 -- Hash Aggregate, thanks to estimates improved by the statistic
 SELECT * FROM check_estimated_rows('SELECT COUNT(*) FROM ndistinct GROUP BY a, b');
@@ -291,41 +278,6 @@ ANALYZE functional_dependencies;
 
 SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies WHERE a = 1 AND b = ''1'' AND c = 1');
 
--- check the ability to use multiple functional dependencies
-CREATE TABLE functional_dependencies_multi (
-	a INTEGER,
-	b INTEGER,
-	c INTEGER,
-	d INTEGER
-);
-
-INSERT INTO functional_dependencies_multi (a, b, c, d)
-    SELECT
-         mod(i,7),
-         mod(i,7),
-         mod(i,11),
-         mod(i,11)
-    FROM generate_series(1,5000) s(i);
-
-ANALYZE functional_dependencies_multi;
-
--- estimates without any functional dependencies
-SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies_multi WHERE a = 0 AND b = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies_multi WHERE c = 0 AND d = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies_multi WHERE a = 0 AND b = 0 AND c = 0 AND d = 0');
-
--- create separate functional dependencies
-CREATE STATISTICS functional_dependencies_multi_1 (dependencies) ON a, b FROM functional_dependencies_multi;
-CREATE STATISTICS functional_dependencies_multi_2 (dependencies) ON c, d FROM functional_dependencies_multi;
-
-ANALYZE functional_dependencies_multi;
-
-SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies_multi WHERE a = 0 AND b = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies_multi WHERE c = 0 AND d = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM functional_dependencies_multi WHERE a = 0 AND b = 0 AND c = 0 AND d = 0');
-
-DROP TABLE functional_dependencies_multi;
-
 -- MCV lists
 CREATE TABLE mcv_lists (
     filler1 TEXT,
@@ -377,10 +329,6 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < 5 AND b < 
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a <= 4 AND b <= ''0'' AND c <= 4');
 
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 OR b = ''1'' OR c = 1');
-
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 OR b = ''1'' OR c = 1 OR d IS NOT NULL');
-
 -- create statistics
 CREATE STATISTICS mcv_lists_stats (mcv) ON a, b, c FROM mcv_lists;
 
@@ -397,11 +345,6 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 AND b = 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a < 5 AND b < ''1'' AND c < 5');
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a <= 4 AND b <= ''0'' AND c <= 4');
-
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 OR b = ''1'' OR c = 1');
-
--- we can't use the statistic for OR clauses that are not fully covered (missing 'd' attribute)
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists WHERE a = 1 OR b = ''1'' OR c = 1 OR d IS NOT NULL');
 
 -- check change of unrelated column type does not reset the MCV statistics
 ALTER TABLE mcv_lists ALTER COLUMN d TYPE VARCHAR(64);
@@ -534,41 +477,6 @@ SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_bool WHERE NOT a AND
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_bool WHERE NOT a AND NOT b AND c');
 
 SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_bool WHERE NOT a AND b AND NOT c');
-
--- check the ability to use multiple MCV lists
-CREATE TABLE mcv_lists_multi (
-	a INTEGER,
-	b INTEGER,
-	c INTEGER,
-	d INTEGER
-);
-
-INSERT INTO mcv_lists_multi (a, b, c, d)
-    SELECT
-         mod(i,5),
-         mod(i,5),
-         mod(i,7),
-         mod(i,7)
-    FROM generate_series(1,5000) s(i);
-
-ANALYZE mcv_lists_multi;
-
--- estimates without any mcv statistics
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 AND b = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE c = 0 AND d = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 AND b = 0 AND c = 0 AND d = 0');
-
--- create separate MCV statistics
-CREATE STATISTICS mcv_lists_multi_1 (mcv) ON a, b FROM mcv_lists_multi;
-CREATE STATISTICS mcv_lists_multi_2 (mcv) ON c, d FROM mcv_lists_multi;
-
-ANALYZE mcv_lists_multi;
-
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 AND b = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE c = 0 AND d = 0');
-SELECT * FROM check_estimated_rows('SELECT * FROM mcv_lists_multi WHERE a = 0 AND b = 0 AND c = 0 AND d = 0');
-
-DROP TABLE mcv_lists_multi;
 
 -- Permission tests. Users should not be able to see specific data values in
 -- the extended statistics, if they lack permission to see those values in

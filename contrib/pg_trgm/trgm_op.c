@@ -5,9 +5,9 @@
 
 #include <ctype.h>
 
-#include "catalog/pg_type.h"
-#include "lib/qunique.h"
 #include "trgm.h"
+
+#include "catalog/pg_type.h"
 #include "tsearch/ts_locale.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -161,6 +161,26 @@ static int
 comp_trgm(const void *a, const void *b)
 {
 	return CMPTRGM(a, b);
+}
+
+static int
+unique_array(trgm *a, int len)
+{
+	trgm	   *curend,
+			   *tmp;
+
+	curend = tmp = a;
+	while (tmp - a < len)
+		if (CMPTRGM(tmp, curend))
+		{
+			curend++;
+			CPTRGM(curend, tmp);
+			tmp++;
+		}
+		else
+			tmp++;
+
+	return curend + 1 - a;
 }
 
 /*
@@ -375,7 +395,7 @@ generate_trgm(char *str, int slen)
 	if (len > 1)
 	{
 		qsort((void *) GETARR(trg), len, sizeof(trgm), comp_trgm);
-		len = qunique(GETARR(trg), len, sizeof(trgm), comp_trgm);
+		len = unique_array(GETARR(trg), len);
 	}
 
 	SET_VARSIZE(trg, CALCGTSIZE(ARRKEY, len));
@@ -448,7 +468,7 @@ comp_ptrgm(const void *v1, const void *v2)
  * ulen1: count of unique trigrams of array "trg1".
  * len2: length of array "trg2" and array "trg2indexes".
  * len: length of the array "found".
- * lags: set of boolean flags parameterizing similarity calculation.
+ * lags: set of boolean flags parametrizing similarity calculation.
  * bounds: whether each trigram is left/right bound of word.
  *
  * Returns word similarity.
@@ -613,7 +633,7 @@ iterate_word_similarity(int *trg2indexes,
  *
  * str1: search pattern string, of length slen1 bytes.
  * str2: text in which we are looking for a word, of length slen2 bytes.
- * flags: set of boolean flags parameterizing similarity calculation.
+ * flags: set of boolean flags parametrizing similarity calculation.
  *
  * Returns word similarity.
  */
@@ -923,7 +943,7 @@ generate_wildcard_trgm(const char *str, int slen)
 	if (len > 1)
 	{
 		qsort((void *) GETARR(trg), len, sizeof(trgm), comp_trgm);
-		len = qunique(GETARR(trg), len, sizeof(trgm), comp_trgm);
+		len = unique_array(GETARR(trg), len);
 	}
 
 	SET_VARSIZE(trg, CALCGTSIZE(ARRKEY, len));
@@ -975,12 +995,14 @@ show_trgm(PG_FUNCTION_ARGS)
 		d[i] = PointerGetDatum(item);
 	}
 
-	a = construct_array(d,
+	a = construct_array(
+						d,
 						ARRNELEM(trg),
 						TEXTOID,
 						-1,
 						false,
-						'i');
+						'i'
+		);
 
 	for (i = 0; i < ARRNELEM(trg); i++)
 		pfree(DatumGetPointer(d[i]));

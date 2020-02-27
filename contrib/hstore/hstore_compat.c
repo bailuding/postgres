@@ -299,7 +299,7 @@ hstoreUpgrade(Datum orig)
 
 	if (valid_new)
 	{
-#ifdef HSTORE_IS_HSTORE_NEW
+#if HSTORE_IS_HSTORE_NEW
 		elog(WARNING, "ambiguous hstore value resolved as hstore-new");
 
 		/*

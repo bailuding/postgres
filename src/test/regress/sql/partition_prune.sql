@@ -1,10 +1,6 @@
 --
 -- Test partitioning planner code
 --
-
--- Force generic plans to be used for all prepared statements in this file.
-set plan_cache_mode = force_generic_plan;
-
 create table lp (a char) partition by list (a);
 create table lp_default partition of lp default;
 create table lp_ef partition of lp for values in ('e', 'f');
@@ -88,10 +84,6 @@ explain (costs off) select * from rlp where a > 20 and a < 27;
 explain (costs off) select * from rlp where a = 29;
 explain (costs off) select * from rlp where a >= 29;
 explain (costs off) select * from rlp where a < 1 or (a > 20 and a < 25);
-
--- where clause contradicts sub-partition's constraint
-explain (costs off) select * from rlp where a = 20 or a = 40;
-explain (costs off) select * from rlp3 where a = 20;   /* empty */
 
 -- redundant clauses are eliminated
 explain (costs off) select * from rlp where a > 1 and a = 10;	/* only default */
@@ -202,13 +194,8 @@ CREATE TABLE part (a INT, b INT) PARTITION BY LIST (a);
 CREATE TABLE part_p1 PARTITION OF part FOR VALUES IN (-2,-1,0,1,2);
 CREATE TABLE part_p2 PARTITION OF part DEFAULT PARTITION BY RANGE(a);
 CREATE TABLE part_p2_p1 PARTITION OF part_p2 DEFAULT;
-CREATE TABLE part_rev (b INT, c INT, a INT);
-ALTER TABLE part ATTACH PARTITION part_rev FOR VALUES IN (3);  -- fail
-ALTER TABLE part_rev DROP COLUMN c;
-ALTER TABLE part ATTACH PARTITION part_rev FOR VALUES IN (3);  -- now it's ok
 INSERT INTO part VALUES (-1,-1), (1,1), (2,NULL), (NULL,-2),(NULL,NULL);
 EXPLAIN (COSTS OFF) SELECT tableoid::regclass as part, a, b FROM part WHERE a IS NULL ORDER BY 1, 2, 3;
-EXPLAIN (VERBOSE, COSTS OFF) SELECT * FROM part p(x) ORDER BY x;
 
 --
 -- some more cases
@@ -364,6 +351,14 @@ set enable_indexonlyscan = off;
 prepare ab_q1 (int, int, int) as
 select * from ab where a between $1 and $2 and b <= $3;
 
+-- Execute query 5 times to allow choose_custom_plan
+-- to start considering a generic plan.
+execute ab_q1 (1, 8, 3);
+execute ab_q1 (1, 8, 3);
+execute ab_q1 (1, 8, 3);
+execute ab_q1 (1, 8, 3);
+execute ab_q1 (1, 8, 3);
+
 explain (analyze, costs off, summary off, timing off) execute ab_q1 (2, 2, 3);
 explain (analyze, costs off, summary off, timing off) execute ab_q1 (1, 2, 3);
 
@@ -373,6 +368,14 @@ deallocate ab_q1;
 prepare ab_q1 (int, int) as
 select a from ab where a between $1 and $2 and b < 3;
 
+-- Execute query 5 times to allow choose_custom_plan
+-- to start considering a generic plan.
+execute ab_q1 (1, 8);
+execute ab_q1 (1, 8);
+execute ab_q1 (1, 8);
+execute ab_q1 (1, 8);
+execute ab_q1 (1, 8);
+
 explain (analyze, costs off, summary off, timing off) execute ab_q1 (2, 2);
 explain (analyze, costs off, summary off, timing off) execute ab_q1 (2, 4);
 
@@ -381,11 +384,23 @@ explain (analyze, costs off, summary off, timing off) execute ab_q1 (2, 4);
 prepare ab_q2 (int, int) as
 select a from ab where a between $1 and $2 and b < (select 3);
 
+execute ab_q2 (1, 8);
+execute ab_q2 (1, 8);
+execute ab_q2 (1, 8);
+execute ab_q2 (1, 8);
+execute ab_q2 (1, 8);
+
 explain (analyze, costs off, summary off, timing off) execute ab_q2 (2, 2);
 
 -- As above, but swap the PARAM_EXEC Param to the first partition level
 prepare ab_q3 (int, int) as
 select a from ab where b between $1 and $2 and a < (select 3);
+
+execute ab_q3 (1, 8);
+execute ab_q3 (1, 8);
+execute ab_q3 (1, 8);
+execute ab_q3 (1, 8);
+execute ab_q3 (1, 8);
 
 explain (analyze, costs off, summary off, timing off) execute ab_q3 (2, 2);
 
@@ -467,16 +482,32 @@ set parallel_tuple_cost = 0;
 set min_parallel_table_scan_size = 0;
 set max_parallel_workers_per_gather = 2;
 
+-- Execute query 5 times to allow choose_custom_plan
+-- to start considering a generic plan.
+execute ab_q4 (1, 8);
+execute ab_q4 (1, 8);
+execute ab_q4 (1, 8);
+execute ab_q4 (1, 8);
+execute ab_q4 (1, 8);
 select explain_parallel_append('execute ab_q4 (2, 2)');
 
 -- Test run-time pruning with IN lists.
 prepare ab_q5 (int, int, int) as
 select avg(a) from ab where a in($1,$2,$3) and b < 4;
 
+-- Execute query 5 times to allow choose_custom_plan
+-- to start considering a generic plan.
+execute ab_q5 (1, 2, 3);
+execute ab_q5 (1, 2, 3);
+execute ab_q5 (1, 2, 3);
+execute ab_q5 (1, 2, 3);
+execute ab_q5 (1, 2, 3);
+
 select explain_parallel_append('execute ab_q5 (1, 1, 1)');
 select explain_parallel_append('execute ab_q5 (2, 3, 3)');
 
 -- Try some params whose values do not belong to any partition.
+-- We'll still get a single subplan in this case, but it should not be scanned.
 select explain_parallel_append('execute ab_q5 (33, 44, 55)');
 
 -- Test Parallel Append with PARAM_EXEC Params
@@ -545,6 +576,7 @@ insert into xy_1 values(100,-10);
 
 set enable_bitmapscan = 0;
 set enable_indexscan = 0;
+set plan_cache_mode = 'force_generic_plan';
 
 prepare ab_q6 as
 select * from (
@@ -563,6 +595,7 @@ execute ab_q6(100);
 
 reset enable_bitmapscan;
 reset enable_indexscan;
+reset plan_cache_mode;
 
 deallocate ab_q1;
 deallocate ab_q2;
@@ -676,6 +709,14 @@ alter table part_cab attach partition part_abc_p1 for values in(3);
 prepare part_abc_q1 (int, int, int) as
 select * from part_abc where a = $1 and b = $2 and c = $3;
 
+-- Execute query 5 times to allow choose_custom_plan
+-- to start considering a generic plan.
+execute part_abc_q1 (1, 2, 3);
+execute part_abc_q1 (1, 2, 3);
+execute part_abc_q1 (1, 2, 3);
+execute part_abc_q1 (1, 2, 3);
+execute part_abc_q1 (1, 2, 3);
+
 -- Single partition should be scanned.
 explain (analyze, costs off, summary off, timing off) execute part_abc_q1 (1, 2, 3);
 
@@ -697,11 +738,18 @@ select * from listp where b = 1;
 -- which match the given parameter.
 prepare q1 (int,int) as select * from listp where b in ($1,$2);
 
+execute q1 (1,2);
+execute q1 (1,2);
+execute q1 (1,2);
+execute q1 (1,2);
+execute q1 (1,2);
+
 explain (analyze, costs off, summary off, timing off)  execute q1 (1,1);
 
 explain (analyze, costs off, summary off, timing off)  execute q1 (2,2);
 
--- Try with no matching partitions.
+-- Try with no matching partitions. One subplan should remain in this case,
+-- but it shouldn't be executed.
 explain (analyze, costs off, summary off, timing off)  execute q1 (0,0);
 
 deallocate q1;
@@ -709,10 +757,17 @@ deallocate q1;
 -- Test more complex cases where a not-equal condition further eliminates partitions.
 prepare q1 (int,int,int,int) as select * from listp where b in($1,$2) and $3 <> b and $4 <> b;
 
+execute q1 (1,2,3,4);
+execute q1 (1,2,3,4);
+execute q1 (1,2,3,4);
+execute q1 (1,2,3,4);
+execute q1 (1,2,3,4);
+
 -- Both partitions allowed by IN clause, but one disallowed by <> clause
 explain (analyze, costs off, summary off, timing off)  execute q1 (1,2,2,0);
 
 -- Both partitions allowed by IN clause, then both excluded again by <> clauses.
+-- One subplan will remain in this case, but it should not be executed.
 explain (analyze, costs off, summary off, timing off)  execute q1 (1,2,2,1);
 
 -- Ensure Params that evaluate to NULL properly prune away all partitions
@@ -784,6 +839,7 @@ select * from mc3p where a < 3 and abs(b) = 1;
 -- a combination of runtime parameters is specified, not all of whose values
 -- are available at the same time
 --
+set plan_cache_mode = force_generic_plan;
 prepare ps1 as
   select * from mc3p where a = $1 and abs(b) < (select 3);
 explain (analyze, costs off, summary off, timing off)
@@ -794,6 +850,7 @@ prepare ps2 as
 explain (analyze, costs off, summary off, timing off)
 execute ps2(1);
 deallocate ps2;
+reset plan_cache_mode;
 
 drop table mc3p;
 
@@ -828,6 +885,14 @@ create index on ma_test (b);
 analyze ma_test;
 prepare mt_q1 (int) as select a from ma_test where a >= $1 and a % 10 = 5 order by b;
 
+-- Execute query 5 times to allow choose_custom_plan
+-- to start considering a generic plan.
+execute mt_q1(0);
+execute mt_q1(0);
+execute mt_q1(0);
+execute mt_q1(0);
+execute mt_q1(0);
+
 explain (analyze, costs off, summary off, timing off) execute mt_q1(15);
 execute mt_q1(15);
 explain (analyze, costs off, summary off, timing off) execute mt_q1(25);
@@ -837,13 +902,6 @@ explain (analyze, costs off, summary off, timing off) execute mt_q1(35);
 execute mt_q1(35);
 
 deallocate mt_q1;
-
-prepare mt_q2 (int) as select * from ma_test where a >= $1 order by b limit 1;
-
--- Ensure output list looks sane when the MergeAppend has no subplans.
-explain (analyze, verbose, costs off, summary off, timing off) execute mt_q2 (35);
-
-deallocate mt_q2;
 
 -- ensure initplan params properly prune partitions
 explain (analyze, costs off, summary off, timing off) select * from ma_test where a >= (select min(b) from ma_test_p2) order by b;
@@ -1014,9 +1072,12 @@ from (
      ) s(a, b, c)
 where s.a = $1 and s.b = $2 and s.c = (select 1);
 
+set plan_cache_mode to force_generic_plan;
+
 explain (costs off) execute q (1, 1);
 execute q (1, 1);
 
+reset plan_cache_mode;
 drop table p, q;
 
 -- Ensure run-time pruning works correctly when we match a partitioned table

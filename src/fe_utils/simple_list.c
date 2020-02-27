@@ -7,7 +7,7 @@
  * it's all we need in, eg, pg_dump.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/fe_utils/simple_list.c
@@ -97,44 +97,6 @@ simple_string_list_member(SimpleStringList *list, const char *val)
 		}
 	}
 	return false;
-}
-
-/*
- * Destroy an OID list
- */
-void
-simple_oid_list_destroy(SimpleOidList *list)
-{
-	SimpleOidListCell *cell;
-
-	cell = list->head;
-	while (cell != NULL)
-	{
-		SimpleOidListCell *next;
-
-		next = cell->next;
-		pg_free(cell);
-		cell = next;
-	}
-}
-
-/*
- * Destroy a string list
- */
-void
-simple_string_list_destroy(SimpleStringList *list)
-{
-	SimpleStringListCell *cell;
-
-	cell = list->head;
-	while (cell != NULL)
-	{
-		SimpleStringListCell *next;
-
-		next = cell->next;
-		pg_free(cell);
-		cell = next;
-	}
 }
 
 /*

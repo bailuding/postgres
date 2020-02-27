@@ -4,7 +4,7 @@
  *	  Routines to determine which indexes are usable for scanning a
  *	  given relation, and create Paths accordingly.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -520,7 +520,7 @@ consider_index_join_outer_rels(PlannerInfo *root, RelOptInfo *rel,
 		IndexClause *iclause = (IndexClause *) lfirst(lc);
 		Relids		clause_relids = iclause->rinfo->clause_relids;
 		EquivalenceClass *parent_ec = iclause->rinfo->parent_ec;
-		int			num_considered_relids;
+		ListCell   *lc2;
 
 		/* If we already tried its relids set, no need to do so again */
 		if (bms_equal_any(clause_relids, *considered_relids))
@@ -533,16 +533,15 @@ consider_index_join_outer_rels(PlannerInfo *root, RelOptInfo *rel,
 		 * exponential growth of planning time when there are many clauses,
 		 * limit the number of relid sets accepted to 10 * considered_clauses.
 		 *
-		 * Note: get_join_index_paths appends entries to *considered_relids,
-		 * but we do not need to visit such newly-added entries within this
-		 * loop, so we don't use foreach() here.  No real harm would be done
-		 * if we did visit them, since the subset check would reject them; but
-		 * it would waste some cycles.
+		 * Note: get_join_index_paths adds entries to *considered_relids, but
+		 * it prepends them to the list, so that we won't visit new entries
+		 * during the inner foreach loop.  No real harm would be done if we
+		 * did, since the subset check would reject them; but it would waste
+		 * some cycles.
 		 */
-		num_considered_relids = list_length(*considered_relids);
-		for (int pos = 0; pos < num_considered_relids; pos++)
+		foreach(lc2, *considered_relids)
 		{
-			Relids		oldrelids = (Relids) list_nth(*considered_relids, pos);
+			Relids		oldrelids = (Relids) lfirst(lc2);
 
 			/*
 			 * If either is a subset of the other, no new set is possible.
@@ -656,7 +655,7 @@ get_join_index_paths(PlannerInfo *root, RelOptInfo *rel,
 			}
 		}
 
-		/* Add restriction clauses */
+		/* Add restriction clauses (this is nondestructive to rclauseset) */
 		clauseset.indexclauses[indexcol] =
 			list_concat(clauseset.indexclauses[indexcol],
 						rclauseset->indexclauses[indexcol]);
@@ -672,9 +671,10 @@ get_join_index_paths(PlannerInfo *root, RelOptInfo *rel,
 	get_index_paths(root, rel, index, &clauseset, bitindexpaths);
 
 	/*
-	 * Remember we considered paths for this set of relids.
+	 * Remember we considered paths for this set of relids.  We use lcons not
+	 * lappend to avoid confusing the loop in consider_index_join_outer_rels.
 	 */
-	*considered_relids = lappend(*considered_relids, relids);
+	*considered_relids = lcons(relids, *considered_relids);
 }
 
 /*
@@ -1204,7 +1204,8 @@ build_paths_for_OR(PlannerInfo *root, RelOptInfo *rel,
 			{
 				/* Form all_clauses if not done already */
 				if (all_clauses == NIL)
-					all_clauses = list_concat_copy(clauses, other_clauses);
+					all_clauses = list_concat(list_copy(clauses),
+											  other_clauses);
 
 				if (!predicate_implied_by(index->indpred, all_clauses, false))
 					continue;	/* can't use it at all */
@@ -1269,7 +1270,7 @@ generate_bitmap_or_paths(PlannerInfo *root, RelOptInfo *rel,
 	 * We can use both the current and other clauses as context for
 	 * build_paths_for_OR; no need to remove ORs from the lists.
 	 */
-	all_clauses = list_concat_copy(clauses, other_clauses);
+	all_clauses = list_concat(list_copy(clauses), other_clauses);
 
 	foreach(lc, clauses)
 	{
@@ -1501,12 +1502,15 @@ choose_bitmap_and(PlannerInfo *root, RelOptInfo *rel, List *paths)
 		Cost		costsofar;
 		List	   *qualsofar;
 		Bitmapset  *clauseidsofar;
+		ListCell   *lastcell;
 
 		pathinfo = pathinfoarray[i];
 		paths = list_make1(pathinfo->path);
 		costsofar = bitmap_scan_cost_est(root, rel, pathinfo->path);
-		qualsofar = list_concat_copy(pathinfo->quals, pathinfo->preds);
+		qualsofar = list_concat(list_copy(pathinfo->quals),
+								list_copy(pathinfo->preds));
 		clauseidsofar = bms_copy(pathinfo->clauseids);
+		lastcell = list_head(paths);	/* for quick deletions */
 
 		for (j = i + 1; j < npaths; j++)
 		{
@@ -1541,16 +1545,20 @@ choose_bitmap_and(PlannerInfo *root, RelOptInfo *rel, List *paths)
 			{
 				/* keep new path in paths, update subsidiary variables */
 				costsofar = newcost;
-				qualsofar = list_concat(qualsofar, pathinfo->quals);
-				qualsofar = list_concat(qualsofar, pathinfo->preds);
+				qualsofar = list_concat(qualsofar,
+										list_copy(pathinfo->quals));
+				qualsofar = list_concat(qualsofar,
+										list_copy(pathinfo->preds));
 				clauseidsofar = bms_add_members(clauseidsofar,
 												pathinfo->clauseids);
+				lastcell = lnext(lastcell);
 			}
 			else
 			{
 				/* reject new path, remove it from paths list */
-				paths = list_truncate(paths, list_length(paths) - 1);
+				paths = list_delete_cell(paths, lnext(lastcell), lastcell);
 			}
+			Assert(lnext(lastcell) == NULL);
 		}
 
 		/* Keep the cheapest AND-group (or singleton) */
@@ -1845,7 +1853,7 @@ find_indexpath_quals(Path *bitmapqual, List **quals, List **preds)
 
 			*quals = lappend(*quals, iclause->rinfo->clause);
 		}
-		*preds = list_concat(*preds, ipath->indexinfo->indpred);
+		*preds = list_concat(*preds, list_copy(ipath->indexinfo->indpred));
 	}
 	else
 		elog(ERROR, "unrecognized node type: %d", nodeTag(bitmapqual));
@@ -2962,6 +2970,10 @@ expand_indexqual_rowcompare(RestrictInfo *rinfo,
 	List	   *new_ops;
 	List	   *var_args;
 	List	   *non_var_args;
+	ListCell   *vargs_cell;
+	ListCell   *nargs_cell;
+	ListCell   *opnos_cell;
+	ListCell   *collids_cell;
 
 	iclause->rinfo = rinfo;
 	iclause->indexcol = indexcol;
@@ -2998,14 +3010,18 @@ expand_indexqual_rowcompare(RestrictInfo *rinfo,
 	 * indexed relation.
 	 */
 	matching_cols = 1;
+	vargs_cell = lnext(list_head(var_args));
+	nargs_cell = lnext(list_head(non_var_args));
+	opnos_cell = lnext(list_head(clause->opnos));
+	collids_cell = lnext(list_head(clause->inputcollids));
 
-	while (matching_cols < list_length(var_args))
+	while (vargs_cell != NULL)
 	{
-		Node	   *varop = (Node *) list_nth(var_args, matching_cols);
-		Node	   *constop = (Node *) list_nth(non_var_args, matching_cols);
+		Node	   *varop = (Node *) lfirst(vargs_cell);
+		Node	   *constop = (Node *) lfirst(nargs_cell);
 		int			i;
 
-		expr_op = list_nth_oid(clause->opnos, matching_cols);
+		expr_op = lfirst_oid(opnos_cell);
 		if (!var_on_left)
 		{
 			/* indexkey is on right, so commute the operator */
@@ -3027,8 +3043,7 @@ expand_indexqual_rowcompare(RestrictInfo *rinfo,
 				get_op_opfamily_strategy(expr_op,
 										 index->opfamily[i]) == op_strategy &&
 				IndexCollMatchesExprColl(index->indexcollations[i],
-										 list_nth_oid(clause->inputcollids,
-													  matching_cols)))
+										 lfirst_oid(collids_cell)))
 				break;
 		}
 		if (i >= index->nkeycolumns)
@@ -3049,6 +3064,10 @@ expand_indexqual_rowcompare(RestrictInfo *rinfo,
 
 		/* This column matches, keep scanning */
 		matching_cols++;
+		vargs_cell = lnext(vargs_cell);
+		nargs_cell = lnext(nargs_cell);
+		opnos_cell = lnext(opnos_cell);
+		collids_cell = lnext(collids_cell);
 	}
 
 	/* Result is non-lossy if all columns are usable as index quals */
@@ -3847,7 +3866,7 @@ match_index_to_operand(Node *operand,
 			{
 				if (indexpr_item == NULL)
 					elog(ERROR, "wrong number of index expressions");
-				indexpr_item = lnext(index->indexprs, indexpr_item);
+				indexpr_item = lnext(indexpr_item);
 			}
 		}
 		if (indexpr_item == NULL)

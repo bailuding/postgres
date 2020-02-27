@@ -4,7 +4,7 @@
  *
  *	  Routines for tsearch manipulation commands
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -575,16 +575,22 @@ AlterTSDictionary(AlterTSDictionaryStmt *stmt)
 	{
 		DefElem    *defel = (DefElem *) lfirst(pl);
 		ListCell   *cell;
+		ListCell   *prev;
+		ListCell   *next;
 
 		/*
 		 * Remove any matches ...
 		 */
-		foreach(cell, dictoptions)
+		prev = NULL;
+		for (cell = list_head(dictoptions); cell; cell = next)
 		{
 			DefElem    *oldel = (DefElem *) lfirst(cell);
 
+			next = lnext(cell);
 			if (strcmp(oldel->defname, defel->defname) == 0)
-				dictoptions = foreach_delete_current(dictoptions, cell);
+				dictoptions = list_delete_cell(dictoptions, cell, prev);
+			else
+				prev = cell;
 		}
 
 		/*
@@ -1552,7 +1558,7 @@ serialize_deflist(List *deflist)
 			appendStringInfoChar(&buf, ch);
 		}
 		appendStringInfoChar(&buf, '\'');
-		if (lnext(deflist, l) != NULL)
+		if (lnext(l) != NULL)
 			appendStringInfoString(&buf, ", ");
 	}
 

@@ -1,7 +1,7 @@
 /*
  * Utilities for working with hash values.
  *
- * Portions Copyright (c) 2017-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2017-2019, PostgreSQL Global Development Group
  */
 
 #ifndef HASHUTILS_H
@@ -20,43 +20,11 @@
 	(((v) >> 31) & UINT64CONST(0x100000001)))
 
 
-extern uint32 hash_bytes(const unsigned char *k, int keylen);
-extern uint64 hash_bytes_extended(const unsigned char *k,
-								  int keylen, uint64 seed);
-extern uint32 hash_bytes_uint32(uint32 k);
-extern uint64 hash_bytes_uint32_extended(uint32 k, uint64 seed);
-
-#ifndef FRONTEND
-static inline Datum
-hash_any(const unsigned char *k, int keylen)
-{
-	return UInt32GetDatum(hash_bytes(k, keylen));
-}
-
-static inline Datum
-hash_any_extended(const unsigned char *k, int keylen, uint64 seed)
-{
-	return UInt64GetDatum(hash_bytes_extended(k, keylen, seed));
-}
-
-static inline Datum
-hash_uint32(uint32 k)
-{
-	return UInt32GetDatum(hash_bytes_uint32(k));
-}
-
-static inline Datum
-hash_uint32_extended(uint32 k, uint64 seed)
-{
-	return UInt64GetDatum(hash_bytes_uint32_extended(k, seed));
-}
-#endif
-
-extern uint32 string_hash(const void *key, Size keysize);
-extern uint32 tag_hash(const void *key, Size keysize);
-extern uint32 uint32_hash(const void *key, Size keysize);
-
-#define oid_hash uint32_hash	/* Remove me eventually */
+extern Datum hash_any(register const unsigned char *k, register int keylen);
+extern Datum hash_any_extended(register const unsigned char *k,
+							   register int keylen, uint64 seed);
+extern Datum hash_uint32(uint32 k);
+extern Datum hash_uint32_extended(uint32 k, uint64 seed);
 
 /*
  * Combine two 32-bit hash values, resulting in another hash value, with

@@ -3,7 +3,7 @@
  * sync.c
  *	  File synchronization management code.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -18,19 +18,19 @@
 #include <fcntl.h>
 #include <sys/file.h>
 
-#include "access/xlog.h"
-#include "access/xlogutils.h"
-#include "commands/tablespace.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "access/xlogutils.h"
+#include "access/xlog.h"
+#include "commands/tablespace.h"
 #include "portability/instr_time.h"
 #include "postmaster/bgwriter.h"
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/md.h"
 #include "utils/hsearch.h"
-#include "utils/inval.h"
 #include "utils/memutils.h"
+#include "utils/inval.h"
 
 static MemoryContext pendingOpsCxt; /* context for the pending ops state  */
 
@@ -216,7 +216,7 @@ SyncPostCheckpoint(void)
 
 		/*
 		 * As in ProcessSyncRequests, we don't want to stop absorbing fsync
-		 * requests for a long time when there are many deletions to be done.
+		 * requests for along time when there are many deletions to be done.
 		 * We can safely call AbsorbSyncRequests() at this point in the loop
 		 * (note it might try to delete list entries).
 		 */
@@ -452,7 +452,9 @@ RememberSyncRequest(const FileTag *ftag, SyncRequestType type)
 	{
 		HASH_SEQ_STATUS hstat;
 		PendingFsyncEntry *entry;
-		ListCell   *cell;
+		ListCell   *cell,
+				   *prev,
+				   *next;
 
 		/* Cancel matching fsync requests */
 		hash_seq_init(&hstat, pendingOps);
@@ -464,16 +466,20 @@ RememberSyncRequest(const FileTag *ftag, SyncRequestType type)
 		}
 
 		/* Remove matching unlink requests */
-		foreach(cell, pendingUnlinks)
+		prev = NULL;
+		for (cell = list_head(pendingUnlinks); cell; cell = next)
 		{
 			PendingUnlinkEntry *entry = (PendingUnlinkEntry *) lfirst(cell);
 
+			next = lnext(cell);
 			if (entry->tag.handler == ftag->handler &&
 				syncsw[ftag->handler].sync_filetagmatches(ftag, &entry->tag))
 			{
-				pendingUnlinks = foreach_delete_current(pendingUnlinks, cell);
+				pendingUnlinks = list_delete_cell(pendingUnlinks, cell, prev);
 				pfree(entry);
 			}
+			else
+				prev = cell;
 		}
 	}
 	else if (type == SYNC_UNLINK_REQUEST)

@@ -38,7 +38,7 @@
  * by re-setting the page's page_dirty flag.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/transam/slru.c
@@ -54,10 +54,11 @@
 #include "access/slru.h"
 #include "access/transam.h"
 #include "access/xlog.h"
-#include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/fd.h"
 #include "storage/shmem.h"
+#include "miscadmin.h"
+
 
 #define SlruFileName(ctl, path, seg) \
 	snprintf(path, MAXPGPATH, "%s/%04X", (ctl)->Dir, seg)
@@ -620,7 +621,7 @@ SimpleLruDoesPhysicalPageExist(SlruCtl ctl, int pageno)
 
 	result = endpos >= (off_t) (offset + BLCKSZ);
 
-	if (CloseTransientFile(fd) != 0)
+	if (CloseTransientFile(fd))
 	{
 		slru_errcause = SLRU_CLOSE_FAILED;
 		slru_errno = errno;
@@ -696,7 +697,7 @@ SlruPhysicalReadPage(SlruCtl ctl, int pageno, int slotno)
 	}
 	pgstat_report_wait_end();
 
-	if (CloseTransientFile(fd) != 0)
+	if (CloseTransientFile(fd))
 	{
 		slru_errcause = SLRU_CLOSE_FAILED;
 		slru_errno = errno;
@@ -868,7 +869,7 @@ SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
 	if (!fdata)
 	{
 		pgstat_report_wait_start(WAIT_EVENT_SLRU_SYNC);
-		if (ctl->do_fsync && pg_fsync(fd) != 0)
+		if (ctl->do_fsync && pg_fsync(fd))
 		{
 			pgstat_report_wait_end();
 			slru_errcause = SLRU_FSYNC_FAILED;
@@ -878,7 +879,7 @@ SlruPhysicalWritePage(SlruCtl ctl, int pageno, int slotno, SlruFlush fdata)
 		}
 		pgstat_report_wait_end();
 
-		if (CloseTransientFile(fd) != 0)
+		if (CloseTransientFile(fd))
 		{
 			slru_errcause = SLRU_CLOSE_FAILED;
 			slru_errno = errno;
@@ -1156,7 +1157,7 @@ SimpleLruFlush(SlruCtl ctl, bool allow_redirtied)
 	for (i = 0; i < fdata.num_files; i++)
 	{
 		pgstat_report_wait_start(WAIT_EVENT_SLRU_FLUSH_SYNC);
-		if (ctl->do_fsync && pg_fsync(fdata.fd[i]) != 0)
+		if (ctl->do_fsync && pg_fsync(fdata.fd[i]))
 		{
 			slru_errcause = SLRU_FSYNC_FAILED;
 			slru_errno = errno;
@@ -1165,7 +1166,7 @@ SimpleLruFlush(SlruCtl ctl, bool allow_redirtied)
 		}
 		pgstat_report_wait_end();
 
-		if (CloseTransientFile(fdata.fd[i]) != 0)
+		if (CloseTransientFile(fdata.fd[i]))
 		{
 			slru_errcause = SLRU_CLOSE_FAILED;
 			slru_errno = errno;
@@ -1374,7 +1375,7 @@ SlruScanDirCbDeleteAll(SlruCtl ctl, char *filename, int segpage, void *data)
 }
 
 /*
- * Scan the SimpleLru directory and apply a callback to each file found in it.
+ * Scan the SimpleLRU directory and apply a callback to each file found in it.
  *
  * If the callback returns true, the scan is stopped.  The last return value
  * from the callback is returned.

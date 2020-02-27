@@ -3,7 +3,7 @@
  * pl_comp.c		- Compiler part of the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -24,7 +24,6 @@
 #include "funcapi.h"
 #include "nodes/makefuncs.h"
 #include "parser/parse_type.h"
-#include "plpgsql.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
@@ -33,6 +32,9 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+
+#include "plpgsql.h"
+
 
 /* ----------
  * Our own local and global variables
@@ -2418,19 +2420,12 @@ compute_function_hashkey(FunctionCallInfo fcinfo,
 
 	/* get call context */
 	hashkey->isTrigger = CALLED_AS_TRIGGER(fcinfo);
-	hashkey->isEventTrigger = CALLED_AS_EVENT_TRIGGER(fcinfo);
 
 	/*
-	 * If DML trigger, include trigger's OID in the hash, so that each trigger
-	 * usage gets a different hash entry, allowing for e.g. different relation
-	 * rowtypes or transition table names.  In validation mode we do not know
-	 * what relation or transition table names are intended to be used, so we
-	 * leave trigOid zero; the hash entry built in this case will never be
-	 * used for any actual calls.
-	 *
-	 * We don't currently need to distinguish different event trigger usages
-	 * in the same way, since the special parameter variables don't vary in
-	 * type in that case.
+	 * if trigger, get its OID.  In validation mode we do not know what
+	 * relation or transition table names are intended to be used, so we leave
+	 * trigOid zero; the hash entry built in this case will never really be
+	 * used.
 	 */
 	if (hashkey->isTrigger && !forValidator)
 	{
@@ -2533,7 +2528,7 @@ delete_function(PLpgSQL_function *func)
 		plpgsql_free_function_memory(func);
 }
 
-/* exported so we can call it from _PG_init() */
+/* exported so we can call it from plpgsql_init() */
 void
 plpgsql_HashTableInit(void)
 {

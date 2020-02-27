@@ -4,7 +4,7 @@
  *
  * Routines to support SELinux labels (security context)
  *
- * Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
@@ -12,8 +12,8 @@
 
 #include <selinux/label.h>
 
-#include "access/genam.h"
 #include "access/htup_details.h"
+#include "access/genam.h"
 #include "access/table.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
@@ -29,13 +29,14 @@
 #include "libpq/auth.h"
 #include "libpq/libpq-be.h"
 #include "miscadmin.h"
-#include "sepgsql.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
+#include "sepgsql.h"
 
 /*
  * Saved hook entries (if stacked)
@@ -206,16 +207,23 @@ sepgsql_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
 						 SubTransactionId parentSubid, void *arg)
 {
 	ListCell   *cell;
+	ListCell   *prev;
+	ListCell   *next;
 
 	if (event == SUBXACT_EVENT_ABORT_SUB)
 	{
-		foreach(cell, client_label_pending)
+		prev = NULL;
+		for (cell = list_head(client_label_pending); cell; cell = next)
 		{
 			pending_label *plabel = lfirst(cell);
 
+			next = lnext(cell);
+
 			if (plabel->subid == mySubid)
 				client_label_pending
-					= foreach_delete_current(client_label_pending, cell);
+					= list_delete_cell(client_label_pending, cell, prev);
+			else
+				prev = cell;
 		}
 	}
 }
@@ -465,11 +473,14 @@ sepgsql_get_label(Oid classId, Oid objectId, int32 subId)
 		{
 			label = pstrdup(unlabeled);
 		}
-		PG_FINALLY();
+		PG_CATCH();
 		{
 			freecon(unlabeled);
+			PG_RE_THROW();
 		}
 		PG_END_TRY();
+
+		freecon(unlabeled);
 	}
 	return label;
 }
@@ -597,11 +608,13 @@ sepgsql_mcstrans_in(PG_FUNCTION_ARGS)
 	{
 		result = pstrdup(raw_label);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		freecon(raw_label);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+	freecon(raw_label);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result));
 }
@@ -635,17 +648,19 @@ sepgsql_mcstrans_out(PG_FUNCTION_ARGS)
 	{
 		result = pstrdup(qual_label);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		freecon(qual_label);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+	freecon(qual_label);
 
 	PG_RETURN_TEXT_P(cstring_to_text(result));
 }
 
 /*
- * quote_object_name
+ * quote_object_names
  *
  * It tries to quote the supplied identifiers
  */
@@ -661,7 +676,7 @@ quote_object_name(const char *src1, const char *src2,
 	if (src1)
 	{
 		temp = quote_identifier(src1);
-		appendStringInfoString(&result, temp);
+		appendStringInfo(&result, "%s", temp);
 		if (src1 != temp)
 			pfree((void *) temp);
 	}
@@ -844,11 +859,13 @@ exec_object_restorecon(struct selabel_handle *sehnd, Oid catalogId)
 
 				SetSecurityLabel(&object, SEPGSQL_LABEL_TAG, context);
 			}
-			PG_FINALLY();
+			PG_CATCH();
 			{
 				freecon(context);
+				PG_RE_THROW();
 			}
 			PG_END_TRY();
+			freecon(context);
 		}
 		else if (errno == ENOENT)
 			ereport(WARNING,
@@ -928,11 +945,14 @@ sepgsql_restorecon(PG_FUNCTION_ARGS)
 		exec_object_restorecon(sehnd, AttributeRelationId);
 		exec_object_restorecon(sehnd, ProcedureRelationId);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		selabel_close(sehnd);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	selabel_close(sehnd);
 
 	PG_RETURN_BOOL(true);
 }

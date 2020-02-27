@@ -14,7 +14,7 @@ if ($windows_os)
 }
 else
 {
-	plan tests => 5;
+	plan tests => 4;
 }
 
 use FindBin;

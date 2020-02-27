@@ -3,7 +3,7 @@
  * heapam_handler.c
  *	  heap table access method code
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -19,13 +19,17 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
+#include "miscadmin.h"
+
 #include "access/genam.h"
 #include "access/heapam.h"
-#include "access/heaptoast.h"
 #include "access/multixact.h"
 #include "access/rewriteheap.h"
 #include "access/tableam.h"
 #include "access/tsmapi.h"
+#include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "catalog/index.h"
@@ -33,16 +37,18 @@
 #include "catalog/storage_xlog.h"
 #include "commands/progress.h"
 #include "executor/executor.h"
-#include "miscadmin.h"
+#include "optimizer/plancat.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
+#include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "storage/smgr.h"
 #include "utils/builtins.h"
 #include "utils/rel.h"
+
 
 static void reform_and_rewrite_tuple(HeapTuple tuple,
 									 Relation OldHeap, Relation NewHeap,
@@ -420,9 +426,7 @@ tuple_lock_retry:
 
 					/* otherwise xmin should not be dirty... */
 					if (TransactionIdIsValid(SnapshotDirty.xmin))
-						ereport(ERROR,
-								(errcode(ERRCODE_DATA_CORRUPTED),
-								 errmsg_internal("t_xmin is uncommitted in tuple to be updated")));
+						elog(ERROR, "t_xmin is uncommitted in tuple to be updated");
 
 					/*
 					 * If tuple is being updated by other transaction then we
@@ -1633,9 +1637,10 @@ heapam_index_build_range_scan(Relation heapRelation,
 			 * For a heap-only tuple, pretend its TID is that of the root. See
 			 * src/backend/access/heap/README.HOT for discussion.
 			 */
-			ItemPointerData tid;
+			HeapTupleData rootTuple;
 			OffsetNumber offnum;
 
+			rootTuple = *heapTuple;
 			offnum = ItemPointerGetOffsetNumber(&heapTuple->t_self);
 
 			if (!OffsetNumberIsValid(root_offsets[offnum - 1]))
@@ -1646,18 +1651,18 @@ heapam_index_build_range_scan(Relation heapRelation,
 										 offnum,
 										 RelationGetRelationName(heapRelation))));
 
-			ItemPointerSet(&tid, ItemPointerGetBlockNumber(&heapTuple->t_self),
-						   root_offsets[offnum - 1]);
+			ItemPointerSetOffsetNumber(&rootTuple.t_self,
+									   root_offsets[offnum - 1]);
 
 			/* Call the AM's callback routine to process the tuple */
-			callback(indexRelation, &tid, values, isnull, tupleIsAlive,
+			callback(indexRelation, &rootTuple, values, isnull, tupleIsAlive,
 					 callback_state);
 		}
 		else
 		{
 			/* Call the AM's callback routine to process the tuple */
-			callback(indexRelation, &heapTuple->t_self, values, isnull,
-					 tupleIsAlive, callback_state);
+			callback(indexRelation, heapTuple, values, isnull, tupleIsAlive,
+					 callback_state);
 		}
 	}
 
@@ -1986,6 +1991,26 @@ heapam_scan_get_blocks_done(HeapScanDesc hscan)
  * ------------------------------------------------------------------------
  */
 
+static uint64
+heapam_relation_size(Relation rel, ForkNumber forkNumber)
+{
+	uint64		nblocks = 0;
+
+	/* Open it at the smgr level if not already done */
+	RelationOpenSmgr(rel);
+
+	/* InvalidForkNumber indicates returning the size for all forks */
+	if (forkNumber == InvalidForkNumber)
+	{
+		for (int i = 0; i < MAX_FORKNUM; i++)
+			nblocks += smgrnblocks(rel->rd_smgr, i);
+	}
+	else
+		nblocks = smgrnblocks(rel->rd_smgr, forkNumber);
+
+	return nblocks * BLCKSZ;
+}
+
 /*
  * Check to see whether the table needs a TOAST table.  It does only if
  * (1) there are any toastable attributes, and (2) the maximum length
@@ -2037,35 +2062,112 @@ heapam_relation_needs_toast_table(Relation rel)
 	return (tuple_length > TOAST_TUPLE_THRESHOLD);
 }
 
-/*
- * TOAST tables for heap relations are just heap relations.
- */
-static Oid
-heapam_relation_toast_am(Relation rel)
-{
-	return rel->rd_rel->relam;
-}
-
 
 /* ------------------------------------------------------------------------
  * Planner related callbacks for the heap AM
  * ------------------------------------------------------------------------
  */
 
-#define HEAP_OVERHEAD_BYTES_PER_TUPLE \
-	(MAXALIGN(SizeofHeapTupleHeader) + sizeof(ItemIdData))
-#define HEAP_USABLE_BYTES_PER_PAGE \
-	(BLCKSZ - SizeOfPageHeaderData)
-
 static void
 heapam_estimate_rel_size(Relation rel, int32 *attr_widths,
 						 BlockNumber *pages, double *tuples,
 						 double *allvisfrac)
 {
-	table_block_relation_estimate_size(rel, attr_widths, pages,
-									   tuples, allvisfrac,
-									   HEAP_OVERHEAD_BYTES_PER_TUPLE,
-									   HEAP_USABLE_BYTES_PER_PAGE);
+	BlockNumber curpages;
+	BlockNumber relpages;
+	double		reltuples;
+	BlockNumber relallvisible;
+	double		density;
+
+	/* it has storage, ok to call the smgr */
+	curpages = RelationGetNumberOfBlocks(rel);
+
+	/* coerce values in pg_class to more desirable types */
+	relpages = (BlockNumber) rel->rd_rel->relpages;
+	reltuples = (double) rel->rd_rel->reltuples;
+	relallvisible = (BlockNumber) rel->rd_rel->relallvisible;
+
+	/*
+	 * HACK: if the relation has never yet been vacuumed, use a minimum size
+	 * estimate of 10 pages.  The idea here is to avoid assuming a
+	 * newly-created table is really small, even if it currently is, because
+	 * that may not be true once some data gets loaded into it.  Once a vacuum
+	 * or analyze cycle has been done on it, it's more reasonable to believe
+	 * the size is somewhat stable.
+	 *
+	 * (Note that this is only an issue if the plan gets cached and used again
+	 * after the table has been filled.  What we're trying to avoid is using a
+	 * nestloop-type plan on a table that has grown substantially since the
+	 * plan was made.  Normally, autovacuum/autoanalyze will occur once enough
+	 * inserts have happened and cause cached-plan invalidation; but that
+	 * doesn't happen instantaneously, and it won't happen at all for cases
+	 * such as temporary tables.)
+	 *
+	 * We approximate "never vacuumed" by "has relpages = 0", which means this
+	 * will also fire on genuinely empty relations.  Not great, but
+	 * fortunately that's a seldom-seen case in the real world, and it
+	 * shouldn't degrade the quality of the plan too much anyway to err in
+	 * this direction.
+	 *
+	 * If the table has inheritance children, we don't apply this heuristic.
+	 * Totally empty parent tables are quite common, so we should be willing
+	 * to believe that they are empty.
+	 */
+	if (curpages < 10 &&
+		relpages == 0 &&
+		!rel->rd_rel->relhassubclass)
+		curpages = 10;
+
+	/* report estimated # pages */
+	*pages = curpages;
+	/* quick exit if rel is clearly empty */
+	if (curpages == 0)
+	{
+		*tuples = 0;
+		*allvisfrac = 0;
+		return;
+	}
+
+	/* estimate number of tuples from previous tuple density */
+	if (relpages > 0)
+		density = reltuples / (double) relpages;
+	else
+	{
+		/*
+		 * When we have no data because the relation was truncated, estimate
+		 * tuple width from attribute datatypes.  We assume here that the
+		 * pages are completely full, which is OK for tables (since they've
+		 * presumably not been VACUUMed yet) but is probably an overestimate
+		 * for indexes.  Fortunately get_relation_info() can clamp the
+		 * overestimate to the parent table's size.
+		 *
+		 * Note: this code intentionally disregards alignment considerations,
+		 * because (a) that would be gilding the lily considering how crude
+		 * the estimate is, and (b) it creates platform dependencies in the
+		 * default plans which are kind of a headache for regression testing.
+		 */
+		int32		tuple_width;
+
+		tuple_width = get_rel_data_width(rel, attr_widths);
+		tuple_width += MAXALIGN(SizeofHeapTupleHeader);
+		tuple_width += sizeof(ItemIdData);
+		/* note: integer division is intentional here */
+		density = (BLCKSZ - SizeOfPageHeaderData) / tuple_width;
+	}
+	*tuples = rint(density * (double) curpages);
+
+	/*
+	 * We use relallvisible as-is, rather than scaling it up like we do for
+	 * the pages and tuples counts, on the theory that any pages added since
+	 * the last VACUUM are most likely not marked all-visible.  But costsize.c
+	 * wants it converted to a fraction.
+	 */
+	if (relallvisible == 0 || curpages <= 0)
+		*allvisfrac = 0;
+	else if ((double) relallvisible >= curpages)
+		*allvisfrac = 1;
+	else
+		*allvisfrac = (double) relallvisible / curpages;
 }
 
 
@@ -2171,11 +2273,10 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 			if (valid)
 			{
 				hscan->rs_vistuples[ntup++] = offnum;
-				PredicateLockTID(scan->rs_rd, &loctup.t_self, snapshot,
-								 HeapTupleHeaderGetXmin(loctup.t_data));
+				PredicateLockTuple(scan->rs_rd, &loctup, snapshot);
 			}
-			HeapCheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
-												buffer, snapshot);
+			CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
+											buffer, snapshot);
 		}
 	}
 
@@ -2362,8 +2463,8 @@ heapam_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate,
 
 			/* in pagemode, heapgetpage did this for us */
 			if (!pagemode)
-				HeapCheckForSerializableConflictOut(visible, scan->rs_rd, tuple,
-													hscan->rs_cbuf, scan->rs_snapshot);
+				CheckForSerializableConflictOut(visible, scan->rs_rd, tuple,
+												hscan->rs_cbuf, scan->rs_snapshot);
 
 			/* Try next tuple from same page. */
 			if (!visible)
@@ -2543,10 +2644,8 @@ static const TableAmRoutine heapam_methods = {
 	.index_build_range_scan = heapam_index_build_range_scan,
 	.index_validate_scan = heapam_index_validate_scan,
 
-	.relation_size = table_block_relation_size,
+	.relation_size = heapam_relation_size,
 	.relation_needs_toast_table = heapam_relation_needs_toast_table,
-	.relation_toast_am = heapam_relation_toast_am,
-	.relation_fetch_toast_slice = heap_fetch_toast_slice,
 
 	.relation_estimate_size = heapam_estimate_rel_size,
 

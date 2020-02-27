@@ -13,7 +13,7 @@
  * we must return a tuples-processed count in the completionTag.  (We no
  * longer do that for CTAS ... WITH NO DATA, however.)
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -25,8 +25,8 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
-#include "access/htup_details.h"
 #include "access/reloptions.h"
+#include "access/htup_details.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
 #include "access/xact.h"
@@ -50,6 +50,7 @@
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
+
 
 typedef struct
 {
@@ -180,7 +181,7 @@ create_ctas_nodata(List *tlist, IntoClause *into)
 			if (lc)
 			{
 				colname = strVal(lfirst(lc));
-				lc = lnext(into->colNames, lc);
+				lc = lnext(lc);
 			}
 			else
 				colname = tle->resname;
@@ -223,7 +224,7 @@ create_ctas_nodata(List *tlist, IntoClause *into)
  * ExecCreateTableAs -- execute a CREATE TABLE AS command
  */
 ObjectAddress
-ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
+ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 				  ParamListInfo params, QueryEnvironment *queryEnv,
 				  char *completionTag)
 {
@@ -270,7 +271,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		ExecuteStmt *estmt = castNode(ExecuteStmt, query->utilityStmt);
 
 		Assert(!is_matview);	/* excluded by syntax */
-		ExecuteQuery(pstate, estmt, into, params, dest, completionTag);
+		ExecuteQuery(estmt, into, queryString, params, dest, completionTag);
 
 		/* get object address that intorel_startup saved for us */
 		address = ((DR_intorel *) dest)->reladdr;
@@ -342,7 +343,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		UpdateActiveSnapshotCommandId();
 
 		/* Create a QueryDesc, redirecting output to our tuple receiver */
-		queryDesc = CreateQueryDesc(plan, pstate->p_sourcetext,
+		queryDesc = CreateQueryDesc(plan, queryString,
 									GetActiveSnapshot(), InvalidSnapshot,
 									dest, params, queryEnv, 0);
 
@@ -464,7 +465,7 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 		if (lc)
 		{
 			colname = strVal(lfirst(lc));
-			lc = lnext(into->colNames, lc);
+			lc = lnext(lc);
 		}
 		else
 			colname = NameStr(attribute->attname);
@@ -537,7 +538,7 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	if (check_enable_rls(intoRelationAddr.objectId, InvalidOid, false) == RLS_ENABLED)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("policies not yet implemented for this command")));
+				 (errmsg("policies not yet implemented for this command"))));
 
 	/*
 	 * Tentatively mark the target as populated, if it's a matview and we're

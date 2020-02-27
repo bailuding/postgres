@@ -3,7 +3,7 @@
  * parse_coerce.c
  *		handle type coercions/conversions for parser
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1010,10 +1010,11 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 		int			rtindex = ((Var *) node)->varno;
 		int			sublevels_up = ((Var *) node)->varlevelsup;
 		int			vlocation = ((Var *) node)->location;
-		ParseNamespaceItem *nsitem;
+		RangeTblEntry *rte;
 
-		nsitem = GetNSItemByRangeTablePosn(pstate, rtindex, sublevels_up);
-		args = expandNSItemVars(nsitem, sublevels_up, vlocation, NULL);
+		rte = GetRTEByRangeTablePosn(pstate, rtindex, sublevels_up);
+		expandRTE(rte, rtindex, sublevels_up, vlocation, false,
+				  NULL, &args);
 	}
 	else
 		ereport(ERROR,
@@ -1084,7 +1085,7 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 					 parser_coercion_errposition(pstate, location, expr)));
 		newargs = lappend(newargs, cexpr);
 		ucolno++;
-		arg = lnext(args, arg);
+		arg = lnext(arg);
 	}
 	if (arg != NULL)
 		ereport(ERROR,
@@ -1282,7 +1283,7 @@ select_common_type(ParseState *pstate, List *exprs, const char *context,
 
 	Assert(exprs != NIL);
 	pexpr = (Node *) linitial(exprs);
-	lc = list_second_cell(exprs);
+	lc = lnext(list_head(exprs));
 	ptype = exprType(pexpr);
 
 	/*
@@ -1292,7 +1293,7 @@ select_common_type(ParseState *pstate, List *exprs, const char *context,
 	 */
 	if (ptype != UNKNOWNOID)
 	{
-		for_each_cell(lc, exprs, lc)
+		for_each_cell(lc, lc)
 		{
 			Node	   *nexpr = (Node *) lfirst(lc);
 			Oid			ntype = exprType(nexpr);
@@ -1316,7 +1317,7 @@ select_common_type(ParseState *pstate, List *exprs, const char *context,
 	ptype = getBaseType(ptype);
 	get_type_category_preferred(ptype, &pcategory, &pispreferred);
 
-	for_each_cell(lc, exprs, lc)
+	for_each_cell(lc, lc)
 	{
 		Node	   *nexpr = (Node *) lfirst(lc);
 		Oid			ntype = getBaseType(exprType(nexpr));

@@ -1342,19 +1342,17 @@ alter table anothertab alter column f5 type bigint;
 
 drop table anothertab;
 
--- test that USING expressions are parsed before column alter type / drop steps
-create table another (f1 int, f2 text, f3 text);
+create table another (f1 int, f2 text);
 
-insert into another values(1, 'one', 'uno');
-insert into another values(2, 'two', 'due');
-insert into another values(3, 'three', 'tre');
+insert into another values(1, 'one');
+insert into another values(2, 'two');
+insert into another values(3, 'three');
 
 select * from another;
 
 alter table another
-  alter f1 type text using f2 || ' and ' || f3 || ' more',
-  alter f2 type bigint using f1 * 10,
-  drop column f3;
+  alter f1 type text using f2 || ' more',
+  alter f2 type bigint using f1 * 10;
 
 select * from another;
 
@@ -1800,7 +1798,7 @@ create operator alter1.=(procedure = alter1.same, leftarg  = alter1.ctype, right
 create operator class alter1.ctype_hash_ops default for type alter1.ctype using hash as
   operator 1 alter1.=(alter1.ctype, alter1.ctype);
 
-create conversion alter1.latin1_to_utf8 for 'latin1' to 'utf8' from iso8859_1_to_utf8;
+create conversion alter1.ascii_to_utf8 for 'sql_ascii' to 'utf8' from ascii_to_utf8;
 
 create text search parser alter1.prs(start = prsd_start, gettoken = prsd_nexttoken, end = prsd_end, lextypes = prsd_lextype);
 create text search configuration alter1.cfg(parser = alter1.prs);
@@ -1821,7 +1819,7 @@ alter operator alter1.=(alter1.ctype, alter1.ctype) set schema alter2;
 alter function alter1.same(alter1.ctype, alter1.ctype) set schema alter2;
 alter type alter1.ctype set schema alter1; -- no-op, same schema
 alter type alter1.ctype set schema alter2;
-alter conversion alter1.latin1_to_utf8 set schema alter2;
+alter conversion alter1.ascii_to_utf8 set schema alter2;
 alter text search parser alter1.prs set schema alter2;
 alter text search configuration alter1.cfg set schema alter2;
 alter text search template alter1.tmpl set schema alter2;
@@ -2081,6 +2079,10 @@ WHERE c.oid IS NOT NULL OR m.mapped_oid IS NOT NULL;
 
 -- Checks on creating and manipulation of user defined relations in
 -- pg_catalog.
+--
+-- XXX: It would be useful to add checks around trying to manipulate
+-- catalog tables, but that might have ugly consequences when run
+-- against an existing server with allow_system_table_mods = on.
 
 SHOW allow_system_table_mods;
 -- disallowed because of search_path issues with pg_dump
@@ -2172,50 +2174,22 @@ ALTER TABLE ONLY test_add_column
 \d test_add_column
 ALTER TABLE test_add_column
 	ADD COLUMN c2 integer, -- fail because c2 already exists
-	ADD COLUMN c3 integer primary key;
+	ADD COLUMN c3 integer;
 \d test_add_column
 ALTER TABLE test_add_column
 	ADD COLUMN IF NOT EXISTS c2 integer, -- skipping because c2 already exists
-	ADD COLUMN c3 integer primary key;
+	ADD COLUMN c3 integer; -- fail because c3 already exists
 \d test_add_column
 ALTER TABLE test_add_column
 	ADD COLUMN IF NOT EXISTS c2 integer, -- skipping because c2 already exists
-	ADD COLUMN IF NOT EXISTS c3 integer primary key; -- skipping because c3 already exists
+	ADD COLUMN IF NOT EXISTS c3 integer; -- skipping because c3 already exists
 \d test_add_column
 ALTER TABLE test_add_column
 	ADD COLUMN IF NOT EXISTS c2 integer, -- skipping because c2 already exists
 	ADD COLUMN IF NOT EXISTS c3 integer, -- skipping because c3 already exists
-	ADD COLUMN c4 integer REFERENCES test_add_column;
+	ADD COLUMN c4 integer;
 \d test_add_column
-ALTER TABLE test_add_column
-	ADD COLUMN IF NOT EXISTS c4 integer REFERENCES test_add_column;
-\d test_add_column
-ALTER TABLE test_add_column
-	ADD COLUMN IF NOT EXISTS c5 SERIAL CHECK (c5 > 8);
-\d test_add_column
-ALTER TABLE test_add_column
-	ADD COLUMN IF NOT EXISTS c5 SERIAL CHECK (c5 > 10);
-\d test_add_column*
 DROP TABLE test_add_column;
-\d test_add_column*
-
--- assorted cases with multiple ALTER TABLE steps
-CREATE TABLE ataddindex(f1 INT);
-INSERT INTO ataddindex VALUES (42), (43);
-CREATE UNIQUE INDEX ataddindexi0 ON ataddindex(f1);
-ALTER TABLE ataddindex
-  ADD PRIMARY KEY USING INDEX ataddindexi0,
-  ALTER f1 TYPE BIGINT;
-\d ataddindex
-DROP TABLE ataddindex;
-
-CREATE TABLE ataddindex(f1 VARCHAR(10));
-INSERT INTO ataddindex(f1) VALUES ('foo'), ('a');
-ALTER TABLE ataddindex
-  ALTER f1 SET DATA TYPE TEXT,
-  ADD EXCLUDE ((f1 LIKE 'a') WITH =);
-\d ataddindex
-DROP TABLE ataddindex;
 
 -- unsupported constraint types for partitioned tables
 CREATE TABLE partitioned (
@@ -2801,42 +2775,3 @@ alter table at_test_sql_partop attach partition at_test_sql_partop_1 for values 
 drop table at_test_sql_partop;
 drop operator class at_test_sql_partop using btree;
 drop function at_test_sql_partop;
-
-
-/* Test case for bug #16242 */
-
--- We create a parent and child where the child has missing
--- non-null attribute values, and arrange to pass them through
--- tuple conversion from the child to the parent tupdesc
-create table bar1 (a integer, b integer not null default 1)
-  partition by range (a);
-create table bar2 (a integer);
-insert into bar2 values (1);
-alter table bar2 add column b integer not null default 1;
--- (at this point bar2 contains tuple with natts=1)
-alter table bar1 attach partition bar2 default;
-
--- this works:
-select * from bar1;
-
--- this exercises tuple conversion:
-create function xtrig()
-  returns trigger language plpgsql
-as $$
-  declare
-    r record;
-  begin
-    for r in select * from old loop
-      raise info 'a=%, b=%', r.a, r.b;
-    end loop;
-    return NULL;
-  end;
-$$;
-create trigger xtrig
-  after update on bar1
-  referencing old table as old
-  for each statement execute procedure xtrig();
-
-update bar1 set a = a + 1;
-
-/* End test case for bug #16242 */

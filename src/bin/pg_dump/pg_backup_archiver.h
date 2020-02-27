@@ -24,10 +24,12 @@
 #ifndef __PG_BACKUP_ARCHIVE__
 #define __PG_BACKUP_ARCHIVE__
 
+
 #include <time.h>
 
-#include "libpq-fe.h"
 #include "pg_backup.h"
+
+#include "libpq-fe.h"
 #include "pqexpbuffer.h"
 
 #define LOBBUFSIZE 16384
@@ -424,6 +426,8 @@ typedef struct _archiveOpts
 extern TocEntry *ArchiveEntry(Archive *AHX, CatalogId catalogId,
 							  DumpId dumpId, ArchiveOpts *opts);
 
+extern void WriteTOC(ArchiveHandle *AH);
+extern void ReadTOC(ArchiveHandle *AH);
 extern void WriteHead(ArchiveHandle *AH);
 extern void ReadHead(ArchiveHandle *AH);
 extern void WriteToc(ArchiveHandle *AH);

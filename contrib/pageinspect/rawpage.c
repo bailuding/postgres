@@ -5,7 +5,7 @@
  *
  * Access-method specific inspection functions are in separate files.
  *
- * Copyright (c) 2007-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2007-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/pageinspect/rawpage.c
@@ -15,13 +15,14 @@
 
 #include "postgres.h"
 
+#include "pageinspect.h"
+
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
 #include "funcapi.h"
 #include "miscadmin.h"
-#include "pageinspect.h"
 #include "storage/bufmgr.h"
 #include "storage/checksum.h"
 #include "utils/builtins.h"
@@ -102,7 +103,7 @@ get_raw_page_internal(text *relname, ForkNumber forknum, BlockNumber blkno)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use raw page functions")));
+				 (errmsg("must be superuser to use raw page functions"))));
 
 	relrv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
 	rel = relation_openrv(relrv, AccessShareLock);
@@ -233,7 +234,7 @@ page_header(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use raw page functions")));
+				 (errmsg("must be superuser to use raw page functions"))));
 
 	raw_page_size = VARSIZE(raw_page) - VARHDRSZ;
 
@@ -305,7 +306,7 @@ page_checksum(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to use raw page functions")));
+				 (errmsg("must be superuser to use raw page functions"))));
 
 	raw_page_size = VARSIZE(raw_page) - VARHDRSZ;
 

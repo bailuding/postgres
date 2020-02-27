@@ -11,7 +11,7 @@
  * subplans, which are re-evaluated every time their result is required.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -32,12 +32,13 @@
 #include "access/htup_details.h"
 #include "executor/executor.h"
 #include "executor/nodeSubplan.h"
-#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "miscadmin.h"
 #include "utils/array.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+
 
 static Datum ExecHashSubPlan(SubPlanState *node,
 							 ExprContext *econtext,

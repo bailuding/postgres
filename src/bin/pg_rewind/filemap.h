@@ -2,15 +2,16 @@
  *
  * filemap.h
  *
- * Copyright (c) 2013-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2019, PostgreSQL Global Development Group
  *-------------------------------------------------------------------------
  */
 #ifndef FILEMAP_H
 #define FILEMAP_H
 
-#include "datapagemap.h"
-#include "storage/block.h"
 #include "storage/relfilenode.h"
+#include "storage/block.h"
+
+#include "datapagemap.h"
 
 /*
  * For every file found in the local or remote system, we have a file entry

@@ -4,7 +4,7 @@
  *	  Definition of (and support for) access control list data structures.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/acl.h
@@ -35,6 +35,7 @@
 #include "access/htup.h"
 #include "nodes/parsenodes.h"
 #include "parser/parse_node.h"
+#include "utils/array.h"
 #include "utils/snapshot.h"
 
 
@@ -103,7 +104,7 @@ typedef struct AclItem
 /*
  * Acl			a one-dimensional array of AclItem
  */
-typedef struct ArrayType Acl;
+typedef ArrayType Acl;
 
 #define ACL_NUM(ACL)			(ARR_DIMS(ACL)[0])
 #define ACL_DAT(ACL)			((AclItem *) ARR_DATA_PTR(ACL))

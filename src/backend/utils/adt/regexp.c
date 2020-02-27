@@ -3,7 +3,7 @@
  * regexp.c
  *	  Postgres' interface to the regular expression package.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -63,7 +63,7 @@ typedef struct regexp_matches_ctx
 	Datum	   *elems;			/* has npatterns elements */
 	bool	   *nulls;			/* has npatterns elements */
 	pg_wchar   *wide_str;		/* wide-char version of original string */
-	char	   *conv_buf;		/* conversion buffer, if needed */
+	char	   *conv_buf;		/* conversion buffer */
 	int			conv_bufsiz;	/* size thereof */
 } regexp_matches_ctx;
 
@@ -654,18 +654,15 @@ textregexreplace(PG_FUNCTION_ARGS)
 }
 
 /*
- * similar_to_escape(), similar_escape()
- *
- * Convert a SQL "SIMILAR TO" regexp pattern to POSIX style, so it can be
- * used by our regexp engine.
- *
- * similar_escape_internal() is the common workhorse for three SQL-exposed
- * functions.  esc_text can be passed as NULL to select the default escape
- * (which is '\'), or as an empty string to select no escape character.
+ * similar_escape()
+ * Convert a SQL:2008 regexp pattern to POSIX style, so it can be used by
+ * our regexp engine.
  */
-static text *
-similar_escape_internal(text *pat_text, text *esc_text)
+Datum
+similar_escape(PG_FUNCTION_ARGS)
 {
+	text	   *pat_text;
+	text	   *esc_text;
 	text	   *result;
 	char	   *p,
 			   *e,
@@ -676,9 +673,13 @@ similar_escape_internal(text *pat_text, text *esc_text)
 	bool		incharclass = false;
 	int			nquotes = 0;
 
+	/* This function is not strict, so must test explicitly */
+	if (PG_ARGISNULL(0))
+		PG_RETURN_NULL();
+	pat_text = PG_GETARG_TEXT_PP(0);
 	p = VARDATA_ANY(pat_text);
 	plen = VARSIZE_ANY_EXHDR(pat_text);
-	if (esc_text == NULL)
+	if (PG_ARGISNULL(1))
 	{
 		/* No ESCAPE clause provided; default to backslash as escape */
 		e = "\\";
@@ -686,11 +687,12 @@ similar_escape_internal(text *pat_text, text *esc_text)
 	}
 	else
 	{
+		esc_text = PG_GETARG_TEXT_PP(1);
 		e = VARDATA_ANY(esc_text);
 		elen = VARSIZE_ANY_EXHDR(esc_text);
 		if (elen == 0)
 			e = NULL;			/* no escape character */
-		else if (elen > 1)
+		else
 		{
 			int			escape_mblen = pg_mbstrlen_with_len(e, elen);
 
@@ -895,65 +897,6 @@ similar_escape_internal(text *pat_text, text *esc_text)
 	*r++ = '$';
 
 	SET_VARSIZE(result, r - ((char *) result));
-
-	return result;
-}
-
-/*
- * similar_to_escape(pattern, escape)
- */
-Datum
-similar_to_escape_2(PG_FUNCTION_ARGS)
-{
-	text	   *pat_text = PG_GETARG_TEXT_PP(0);
-	text	   *esc_text = PG_GETARG_TEXT_PP(1);
-	text	   *result;
-
-	result = similar_escape_internal(pat_text, esc_text);
-
-	PG_RETURN_TEXT_P(result);
-}
-
-/*
- * similar_to_escape(pattern)
- * Inserts a default escape character.
- */
-Datum
-similar_to_escape_1(PG_FUNCTION_ARGS)
-{
-	text	   *pat_text = PG_GETARG_TEXT_PP(0);
-	text	   *result;
-
-	result = similar_escape_internal(pat_text, NULL);
-
-	PG_RETURN_TEXT_P(result);
-}
-
-/*
- * similar_escape(pattern, escape)
- *
- * Legacy function for compatibility with views stored using the
- * pre-v13 expansion of SIMILAR TO.  Unlike the above functions, this
- * is non-strict, which leads to not-per-spec handling of "ESCAPE NULL".
- */
-Datum
-similar_escape(PG_FUNCTION_ARGS)
-{
-	text	   *pat_text;
-	text	   *esc_text;
-	text	   *result;
-
-	/* This function is not strict, so must test explicitly */
-	if (PG_ARGISNULL(0))
-		PG_RETURN_NULL();
-	pat_text = PG_GETARG_TEXT_PP(0);
-
-	if (PG_ARGISNULL(1))
-		esc_text = NULL;		/* use default escape character */
-	else
-		esc_text = PG_GETARG_TEXT_PP(1);
-
-	result = similar_escape_internal(pat_text, esc_text);
 
 	PG_RETURN_TEXT_P(result);
 }
@@ -1285,6 +1228,7 @@ static ArrayType *
 build_regexp_match_result(regexp_matches_ctx *matchctx)
 {
 	char	   *buf = matchctx->conv_buf;
+	int			bufsiz PG_USED_FOR_ASSERTS_ONLY = matchctx->conv_bufsiz;
 	Datum	   *elems = matchctx->elems;
 	bool	   *nulls = matchctx->nulls;
 	int			dims[1];
@@ -1310,7 +1254,7 @@ build_regexp_match_result(regexp_matches_ctx *matchctx)
 												   buf,
 												   eo - so);
 
-			Assert(len < matchctx->conv_bufsiz);
+			Assert(len < bufsiz);
 			elems[i] = PointerGetDatum(cstring_to_text_with_len(buf, len));
 			nulls[i] = false;
 		}
@@ -1466,22 +1410,25 @@ build_regexp_split_result(regexp_matches_ctx *splitctx)
 	if (startpos < 0)
 		elog(ERROR, "invalid match ending position");
 
-	endpos = splitctx->match_locs[splitctx->next_match * 2];
-	if (endpos < startpos)
-		elog(ERROR, "invalid match starting position");
-
 	if (buf)
 	{
+		int			bufsiz PG_USED_FOR_ASSERTS_ONLY = splitctx->conv_bufsiz;
 		int			len;
 
+		endpos = splitctx->match_locs[splitctx->next_match * 2];
+		if (endpos < startpos)
+			elog(ERROR, "invalid match starting position");
 		len = pg_wchar2mb_with_len(splitctx->wide_str + startpos,
 								   buf,
 								   endpos - startpos);
-		Assert(len < splitctx->conv_bufsiz);
+		Assert(len < bufsiz);
 		return PointerGetDatum(cstring_to_text_with_len(buf, len));
 	}
 	else
 	{
+		endpos = splitctx->match_locs[splitctx->next_match * 2];
+		if (endpos < startpos)
+			elog(ERROR, "invalid match starting position");
 		return DirectFunctionCall3(text_substr,
 								   PointerGetDatum(splitctx->orig_str),
 								   Int32GetDatum(startpos + 1),

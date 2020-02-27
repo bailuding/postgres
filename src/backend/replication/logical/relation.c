@@ -2,7 +2,7 @@
  * relation.c
  *	   PostgreSQL logical replication
  *
- * Copyright (c) 2016-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/relation.c
@@ -220,8 +220,6 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 {
 	LogicalRepRelMapEntry *entry;
 	bool		found;
-	Oid			relid = InvalidOid;
-	LogicalRepRelation *remoterel;
 
 	if (LogicalRepRelMap == NULL)
 		logicalrep_relmap_init();
@@ -234,16 +232,19 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 		elog(ERROR, "no relation map entry for remote relation ID %u",
 			 remoteid);
 
-	remoterel = &entry->remoterel;
-
-	/*
-	 * When opening and locking a relation, pending invalidation messages are
-	 * processed which can invalidate the relation.  We need to update the
-	 * local cache both when we are first time accessing the relation and when
-	 * the relation is invalidated (aka entry->localreloid is set InvalidOid).
-	 */
+	/* Need to update the local cache? */
 	if (!OidIsValid(entry->localreloid))
 	{
+		Oid			relid;
+		int			i;
+		int			found;
+		Bitmapset  *idkey;
+		TupleDesc	desc;
+		LogicalRepRelation *remoterel;
+		MemoryContext oldctx;
+
+		remoterel = &entry->remoterel;
+
 		/* Try to find and lock the relation by name. */
 		relid = RangeVarGetRelid(makeRangeVar(remoterel->nspname,
 											  remoterel->relname, -1),
@@ -254,21 +255,6 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 					 errmsg("logical replication target relation \"%s.%s\" does not exist",
 							remoterel->nspname, remoterel->relname)));
 		entry->localrel = table_open(relid, NoLock);
-
-	}
-	else
-	{
-		relid = entry->localreloid;
-		entry->localrel = table_open(entry->localreloid, lockmode);
-	}
-
-	if (!OidIsValid(entry->localreloid))
-	{
-		int			found;
-		Bitmapset  *idkey;
-		TupleDesc	desc;
-		MemoryContext oldctx;
-		int			i;
 
 		/* Check for supported relkind. */
 		CheckSubscriptionRelkind(entry->localrel->rd_rel->relkind,
@@ -281,7 +267,7 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 		 */
 		desc = RelationGetDescr(entry->localrel);
 		oldctx = MemoryContextSwitchTo(LogicalRepRelMapContext);
-		entry->attrmap = make_attrmap(desc->natts);
+		entry->attrmap = palloc(desc->natts * sizeof(AttrNumber));
 		MemoryContextSwitchTo(oldctx);
 
 		found = 0;
@@ -292,14 +278,14 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 
 			if (attr->attisdropped || attr->attgenerated)
 			{
-				entry->attrmap->attnums[i] = -1;
+				entry->attrmap[i] = -1;
 				continue;
 			}
 
 			attnum = logicalrep_rel_att_by_name(remoterel,
 												NameStr(attr->attname));
 
-			entry->attrmap->attnums[i] = attnum;
+			entry->attrmap[i] = attnum;
 			if (attnum >= 0)
 				found++;
 		}
@@ -354,8 +340,8 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 
 			attnum = AttrNumberGetAttrOffset(attnum);
 
-			if (entry->attrmap->attnums[attnum] < 0 ||
-				!bms_is_member(entry->attrmap->attnums[attnum], remoterel->attkeys))
+			if (entry->attrmap[attnum] < 0 ||
+				!bms_is_member(entry->attrmap[attnum], remoterel->attkeys))
 			{
 				entry->updatable = false;
 				break;
@@ -364,6 +350,8 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 
 		entry->localreloid = relid;
 	}
+	else
+		entry->localrel = table_open(entry->localreloid, lockmode);
 
 	if (entry->state != SUBREL_STATE_READY)
 		entry->state = GetSubscriptionRelState(MySubscription->oid,

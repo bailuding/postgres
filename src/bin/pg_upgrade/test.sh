@@ -6,7 +6,7 @@
 # runs the regression tests (to put in some data), runs pg_dumpall,
 # runs pg_upgrade, runs pg_dumpall again, compares the dumps.
 #
-# Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 
 set -e
@@ -222,7 +222,7 @@ PGDATA="$BASE_PGDATA"
 
 standard_initdb 'initdb'
 
-pg_upgrade $PG_UPGRADE_OPTS -d "${PGDATA}.old" -D "$PGDATA" -b "$oldbindir" -p "$PGPORT" -P "$PGPORT"
+pg_upgrade $PG_UPGRADE_OPTS -d "${PGDATA}.old" -D "$PGDATA" -b "$oldbindir" -B "$bindir" -p "$PGPORT" -P "$PGPORT"
 
 # make sure all directories and files have group permissions, on Unix hosts
 # Windows hosts don't support Unix-y permissions.

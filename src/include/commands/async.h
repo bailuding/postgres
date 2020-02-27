@@ -3,7 +3,7 @@
  * async.h
  *	  Asynchronous notification: NOTIFY, LISTEN, UNLISTEN
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/commands/async.h
@@ -14,6 +14,8 @@
 #define ASYNC_H
 
 #include <signal.h>
+
+#include "fmgr.h"
 
 /*
  * The number of SLRU page buffers we use for the notification queue.
@@ -40,6 +42,7 @@ extern void Async_UnlistenAll(void);
 extern void PreCommit_Notify(void);
 extern void AtCommit_Notify(void);
 extern void AtAbort_Notify(void);
+extern void AtSubStart_Notify(void);
 extern void AtSubCommit_Notify(void);
 extern void AtSubAbort_Notify(void);
 extern void AtPrepare_Notify(void);

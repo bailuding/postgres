@@ -3,7 +3,7 @@
  * allpaths.c
  *	  Routines to find possible search paths for processing a query
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -610,7 +610,7 @@ set_rel_consider_parallel(PlannerInfo *root, RelOptInfo *rel,
 
 			/*
 			 * Currently, parallel workers can't access the leader's temporary
-			 * tables.  We could possibly relax this if we wrote all of its
+			 * tables.  We could possibly relax this if the wrote all of its
 			 * local buffers at the start of the query and made no changes
 			 * thereafter (maybe we could allow hint bit changes), and if we
 			 * taught the workers to read them.  Writing a large number of
@@ -1266,7 +1266,7 @@ set_append_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 		if (rel->part_scheme)
 			rel->partitioned_child_rels =
 				list_concat(rel->partitioned_child_rels,
-							childrel->partitioned_child_rels);
+							list_copy(childrel->partitioned_child_rels));
 
 		/*
 		 * Child is live, so add it to the live_childrels list for use below.
@@ -1347,8 +1347,9 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 				component = root->simple_rel_array[relid];
 				Assert(component->part_scheme != NULL);
 				Assert(list_length(component->partitioned_child_rels) >= 1);
-				partrels = list_concat(partrels,
-									   component->partitioned_child_rels);
+				partrels =
+					list_concat(partrels,
+								list_copy(component->partitioned_child_rels));
 			}
 
 			partitioned_rels = list_make1(partrels);
@@ -2047,7 +2048,8 @@ accumulate_append_subpath(Path *path, List **subpaths, List **special_subpaths)
 
 		if (!apath->path.parallel_aware || apath->first_partial_path == 0)
 		{
-			*subpaths = list_concat(*subpaths, apath->subpaths);
+			/* list_copy is important here to avoid sharing list substructure */
+			*subpaths = list_concat(*subpaths, list_copy(apath->subpaths));
 			return;
 		}
 		else if (special_subpaths != NULL)
@@ -2070,7 +2072,8 @@ accumulate_append_subpath(Path *path, List **subpaths, List **special_subpaths)
 	{
 		MergeAppendPath *mpath = (MergeAppendPath *) path;
 
-		*subpaths = list_concat(*subpaths, mpath->subpaths);
+		/* list_copy is important here to avoid sharing list substructure */
+		*subpaths = list_concat(*subpaths, list_copy(mpath->subpaths));
 		return;
 	}
 
@@ -3201,7 +3204,7 @@ compare_tlist_datatypes(List *tlist, List *colTypes,
 			elog(ERROR, "wrong number of tlist entries");
 		if (exprType((Node *) tle->expr) != lfirst_oid(colType))
 			safetyInfo->unsafeColumns[tle->resno] = true;
-		colType = lnext(colTypes, colType);
+		colType = lnext(colType);
 	}
 	if (colType != NULL)
 		elog(ERROR, "wrong number of tlist entries");
@@ -3758,7 +3761,7 @@ print_restrictclauses(PlannerInfo *root, List *clauses)
 		RestrictInfo *c = lfirst(l);
 
 		print_expr((Node *) c->clause, root->parse->rtable);
-		if (lnext(clauses, l))
+		if (lnext(l))
 			printf(", ");
 	}
 }

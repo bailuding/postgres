@@ -46,7 +46,7 @@
  *		to avoid physically constructing projection tuples in many cases.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -57,17 +57,17 @@
  */
 #include "postgres.h"
 
-#include "access/heaptoast.h"
 #include "access/htup_details.h"
 #include "access/tupdesc_details.h"
-#include "catalog/pg_type.h"
+#include "access/tuptoaster.h"
 #include "funcapi.h"
+#include "catalog/pg_type.h"
 #include "nodes/nodeFuncs.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
-#include "utils/expandeddatum.h"
 #include "utils/lsyscache.h"
 #include "utils/typcache.h"
+
 
 static TupleDesc ExecTypeFromTLInternal(List *targetList,
 										bool skipjunk);
@@ -1154,7 +1154,7 @@ ExecAllocTableSlot(List **tupleTable, TupleDesc desc,
  *		This releases any resources (buffer pins, tupdesc refcounts)
  *		held by the tuple table, and optionally releases the memory
  *		occupied by the tuple table data structure.
- *		It is expected that this routine be called by ExecEndPlan().
+ *		It is expected that this routine be called by EndPlan().
  * --------------------------------
  */
 void

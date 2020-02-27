@@ -3,8 +3,9 @@
 #ifndef _ECPG_PREPROC_EXTERN_H
 #define _ECPG_PREPROC_EXTERN_H
 
-#include "common/keywords.h"
 #include "type.h"
+
+#include "common/keywords.h"
 
 #ifndef CHAR_BIT
 #include <limits.h>
@@ -29,6 +30,7 @@ extern int	braces_open,
 			struct_level,
 			ecpg_internal_var;
 extern char *current_function;
+extern char *descriptor_index;
 extern char *descriptor_name;
 extern char *connection;
 extern char *input_filename;

@@ -10,15 +10,16 @@
 #include "postgres_fe.h"
 
 #include "catalog/pg_type_d.h"
-#include "decimal.h"
+
 #include "ecpg-pthread-win32.h"
-#include "ecpgerrno.h"
-#include "ecpglib.h"
-#include "ecpglib_extern.h"
+#include "decimal.h"
 #include "ecpgtype.h"
+#include "ecpglib.h"
+#include "ecpgerrno.h"
+#include "ecpglib_extern.h"
 #include "sqlca.h"
-#include "sqlda-compat.h"
 #include "sqlda-native.h"
+#include "sqlda-compat.h"
 
 /*
  * Compute the next variable's offset with

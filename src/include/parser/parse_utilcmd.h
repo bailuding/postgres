@@ -4,7 +4,7 @@
  *		parse analysis for utility commands
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/parser/parse_utilcmd.h
@@ -16,14 +16,10 @@
 
 #include "parser/parse_node.h"
 
-struct AttrMap;					/* avoid including attmap.h here */
-
 
 extern List *transformCreateStmt(CreateStmt *stmt, const char *queryString);
-extern AlterTableStmt *transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
-											   const char *queryString,
-											   List **beforeStmts,
-											   List **afterStmts);
+extern List *transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
+									 const char *queryString);
 extern IndexStmt *transformIndexStmt(Oid relid, IndexStmt *stmt,
 									 const char *queryString);
 extern void transformRuleStmt(RuleStmt *stmt, const char *queryString,
@@ -33,7 +29,7 @@ extern PartitionBoundSpec *transformPartitionBound(ParseState *pstate, Relation 
 												   PartitionBoundSpec *spec);
 extern IndexStmt *generateClonedIndexStmt(RangeVar *heapRel,
 										  Relation source_idx,
-										  const struct AttrMap *attmap,
+										  const AttrNumber *attmap, int attmap_length,
 										  Oid *constraintOid);
 
 #endif							/* PARSE_UTILCMD_H */

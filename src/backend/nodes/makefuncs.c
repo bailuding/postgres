@@ -4,7 +4,7 @@
  *	  creator functions for various nodes. The functions here are for the
  *	  most frequently created nodes.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,6 +17,7 @@
 
 #include "catalog/pg_class.h"
 #include "catalog/pg_type.h"
+#include "fmgr.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "utils/lsyscache.h"
@@ -80,13 +81,13 @@ makeVar(Index varno,
 	var->varlevelsup = varlevelsup;
 
 	/*
-	 * Only a few callers need to make Var nodes with varnosyn/varattnosyn
-	 * different from varno/varattno.  We don't provide separate arguments for
-	 * them, but just initialize them to the given varno/varattno.  This
+	 * Since few if any routines ever create Var nodes with varnoold/varoattno
+	 * different from varno/varattno, we don't provide separate arguments for
+	 * them, but just initialize them to the given varno/varattno. This
 	 * reduces code clutter and chance of error for most callers.
 	 */
-	var->varnosyn = varno;
-	var->varattnosyn = varattno;
+	var->varnoold = varno;
+	var->varoattno = varattno;
 
 	/* Likewise, we just set location to "unknown" here */
 	var->location = -1;

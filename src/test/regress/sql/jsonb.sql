@@ -64,17 +64,9 @@ SELECT array_to_json(ARRAY [jsonb '{"a":1}', jsonb '{"b":[2,3]}']);
 
 -- anyarray column
 
-CREATE TEMP TABLE rows AS
-SELECT x, 'txt' || x as y
-FROM generate_series(1,3) AS x;
-
-analyze rows;
-
-select attname, to_jsonb(histogram_bounds) histogram_bounds
+select to_jsonb(histogram_bounds) histogram_bounds
 from pg_stats
-where tablename = 'rows' and
-      schemaname = pg_my_temp_schema()::regnamespace::text
-order by 1;
+where attname = 'tmplname' and tablename = 'pg_pltemplate';
 
 -- to_jsonb, timestamps
 
@@ -97,6 +89,10 @@ select to_jsonb(timestamptz 'Infinity');
 select to_jsonb(timestamptz '-Infinity');
 
 --jsonb_agg
+
+CREATE TEMP TABLE rows AS
+SELECT x, 'txt' || x as y
+FROM generate_series(1,3) AS x;
 
 SELECT jsonb_agg(q)
   FROM ( SELECT $$a$$ || x AS b, y AS c,
@@ -1153,26 +1149,6 @@ select jsonb_set('{"a": [1, 2, 3]}', '{a, non_integer}', '"new_value"');
 select jsonb_set('{"a": {"b": [1, 2, 3]}}', '{a, b, non_integer}', '"new_value"');
 select jsonb_set('{"a": {"b": [1, 2, 3]}}', '{a, b, NULL}', '"new_value"');
 
--- jsonb_set_lax
-
-\pset null NULL
-
--- pass though non nulls to jsonb_set
-select jsonb_set_lax('{"a":1,"b":2}','{b}','5') ;
-select jsonb_set_lax('{"a":1,"b":2}','{d}','6', true) ;
--- using the default treatment
-select jsonb_set_lax('{"a":1,"b":2}','{b}',null);
-select jsonb_set_lax('{"a":1,"b":2}','{d}',null,true);
--- errors
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, true, null);
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, true, 'no_such_treatment');
--- explicit treatments
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'raise_exception') as raise_exception;
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'return_target') as return_target;
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'delete_key') as delete_key;
-select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'use_json_null') as use_json_null;
-
-\pset null
 
 -- jsonb_insert
 select jsonb_insert('{"a": [0,1,2]}', '{a, 1}', '"new_value"');

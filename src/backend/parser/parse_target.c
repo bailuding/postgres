@@ -3,7 +3,7 @@
  * parse_target.c
  *	  handle target lists
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,17 +20,18 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
+#include "parser/parsetree.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_func.h"
 #include "parser/parse_relation.h"
 #include "parser/parse_target.h"
 #include "parser/parse_type.h"
-#include "parser/parsetree.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/typcache.h"
+
 
 static void markTargetListOrigin(ParseState *pstate, TargetEntry *tle,
 								 Var *var, int levelsup);
@@ -41,8 +42,7 @@ static Node *transformAssignmentIndirection(ParseState *pstate,
 											Oid targetTypeId,
 											int32 targetTypMod,
 											Oid targetCollation,
-											List *indirection,
-											ListCell *indirection_cell,
+											ListCell *indirection,
 											Node *rhs,
 											int location);
 static Node *transformAssignmentSubscripts(ParseState *pstate,
@@ -53,7 +53,6 @@ static Node *transformAssignmentSubscripts(ParseState *pstate,
 										   Oid targetCollation,
 										   List *subscripts,
 										   bool isSlice,
-										   List *indirection,
 										   ListCell *next_indirection,
 										   Node *rhs,
 										   int location);
@@ -62,9 +61,8 @@ static List *ExpandColumnRefStar(ParseState *pstate, ColumnRef *cref,
 static List *ExpandAllTables(ParseState *pstate, int location);
 static List *ExpandIndirectionStar(ParseState *pstate, A_Indirection *ind,
 								   bool make_target_entry, ParseExprKind exprKind);
-static List *ExpandSingleTable(ParseState *pstate, ParseNamespaceItem *nsitem,
-							   int sublevels_up, int location,
-							   bool make_target_entry);
+static List *ExpandSingleTable(ParseState *pstate, RangeTblEntry *rte,
+							   int location, bool make_target_entry);
 static List *ExpandRowReference(ParseState *pstate, Node *expr,
 								bool make_target_entry);
 static int	FigureColnameInternal(Node *node, char **name);
@@ -346,11 +344,8 @@ markTargetListOrigins(ParseState *pstate, List *targetlist)
  *
  * levelsup is an extra offset to interpret the Var's varlevelsup correctly.
  *
- * Note that we do not drill down into views, but report the view as the
- * column owner.  There's also no need to drill down into joins: if we see
- * a join alias Var, it must be a merged JOIN USING column (or possibly a
- * whole-row Var); that is not a direct reference to any plain table column,
- * so we don't report it.
+ * This is split out so it can recurse for join references.  Note that we
+ * do not drill down into views, but report the view as the column owner.
  */
 static void
 markTargetListOrigin(ParseState *pstate, TargetEntry *tle,
@@ -388,6 +383,17 @@ markTargetListOrigin(ParseState *pstate, TargetEntry *tle,
 			}
 			break;
 		case RTE_JOIN:
+			/* Join RTE --- recursively inspect the alias variable */
+			if (attnum != InvalidAttrNumber)
+			{
+				Var		   *aliasvar;
+
+				Assert(attnum > 0 && attnum <= list_length(rte->joinaliasvars));
+				aliasvar = (Var *) list_nth(rte->joinaliasvars, attnum - 1);
+				/* We intentionally don't strip implicit coercions here */
+				markTargetListOrigin(pstate, tle, aliasvar, netlevelsup);
+			}
+			break;
 		case RTE_FUNCTION:
 		case RTE_VALUES:
 		case RTE_TABLEFUNC:
@@ -541,13 +547,10 @@ transformAssignedExpr(ParseState *pstate,
 			/*
 			 * Build a Var for the column to be updated.
 			 */
-			Var		   *var;
-
-			var = makeVar(pstate->p_target_nsitem->p_rtindex, attrno,
-						  attrtype, attrtypmod, attrcollation, 0);
-			var->location = location;
-
-			colVar = (Node *) var;
+			colVar = (Node *) make_var(pstate,
+									   pstate->p_target_rangetblentry,
+									   attrno,
+									   location);
 		}
 
 		expr = (Expr *)
@@ -558,7 +561,6 @@ transformAssignedExpr(ParseState *pstate,
 										   attrtype,
 										   attrtypmod,
 										   attrcollation,
-										   indirection,
 										   list_head(indirection),
 										   (Node *) expr,
 										   location);
@@ -660,9 +662,8 @@ updateTargetListEntry(ParseState *pstate,
  * collation of the object to be assigned to (initially the target column,
  * later some subobject).
  *
- * indirection is the list of indirection nodes, and indirection_cell is the
- * start of the sublist remaining to process.  When it's NULL, we're done
- * recursing and can just coerce and return the RHS.
+ * indirection is the sublist remaining to process.  When it's NULL, we're
+ * done recursing and can just coerce and return the RHS.
  *
  * rhs is the already-transformed value to be assigned; note it has not been
  * coerced to any particular type.
@@ -680,8 +681,7 @@ transformAssignmentIndirection(ParseState *pstate,
 							   Oid targetTypeId,
 							   int32 targetTypMod,
 							   Oid targetCollation,
-							   List *indirection,
-							   ListCell *indirection_cell,
+							   ListCell *indirection,
 							   Node *rhs,
 							   int location)
 {
@@ -690,7 +690,7 @@ transformAssignmentIndirection(ParseState *pstate,
 	bool		isSlice = false;
 	ListCell   *i;
 
-	if (indirection_cell && !basenode)
+	if (indirection && !basenode)
 	{
 		/*
 		 * Set up a substitution.  We abuse CaseTestExpr for this.  It's safe
@@ -712,7 +712,7 @@ transformAssignmentIndirection(ParseState *pstate,
 	 * subscripting.  Adjacent A_Indices nodes have to be treated as a single
 	 * multidimensional subscript operation.
 	 */
-	for_each_cell(i, indirection, indirection_cell)
+	for_each_cell(i, indirection)
 	{
 		Node	   *n = lfirst(i);
 
@@ -754,7 +754,6 @@ transformAssignmentIndirection(ParseState *pstate,
 													 targetCollation,
 													 subscripts,
 													 isSlice,
-													 indirection,
 													 i,
 													 rhs,
 													 location);
@@ -804,8 +803,7 @@ transformAssignmentIndirection(ParseState *pstate,
 												 fieldTypeId,
 												 fieldTypMod,
 												 fieldCollation,
-												 indirection,
-												 lnext(indirection, i),
+												 lnext(i),
 												 rhs,
 												 location);
 
@@ -842,7 +840,6 @@ transformAssignmentIndirection(ParseState *pstate,
 											 targetCollation,
 											 subscripts,
 											 isSlice,
-											 indirection,
 											 NULL,
 											 rhs,
 											 location);
@@ -895,7 +892,6 @@ transformAssignmentSubscripts(ParseState *pstate,
 							  Oid targetCollation,
 							  List *subscripts,
 							  bool isSlice,
-							  List *indirection,
 							  ListCell *next_indirection,
 							  Node *rhs,
 							  int location)
@@ -935,7 +931,6 @@ transformAssignmentSubscripts(ParseState *pstate,
 										 typeNeeded,
 										 containerTypMod,
 										 collationNeeded,
-										 indirection,
 										 next_indirection,
 										 rhs,
 										 location);
@@ -1123,7 +1118,7 @@ ExpandColumnRefStar(ParseState *pstate, ColumnRef *cref,
 		 */
 		char	   *nspname = NULL;
 		char	   *relname = NULL;
-		ParseNamespaceItem *nsitem = NULL;
+		RangeTblEntry *rte = NULL;
 		int			levels_up;
 		enum
 		{
@@ -1149,16 +1144,16 @@ ExpandColumnRefStar(ParseState *pstate, ColumnRef *cref,
 		{
 			case 2:
 				relname = strVal(linitial(fields));
-				nsitem = refnameNamespaceItem(pstate, nspname, relname,
-											  cref->location,
-											  &levels_up);
+				rte = refnameRangeTblEntry(pstate, nspname, relname,
+										   cref->location,
+										   &levels_up);
 				break;
 			case 3:
 				nspname = strVal(linitial(fields));
 				relname = strVal(lsecond(fields));
-				nsitem = refnameNamespaceItem(pstate, nspname, relname,
-											  cref->location,
-											  &levels_up);
+				rte = refnameRangeTblEntry(pstate, nspname, relname,
+										   cref->location,
+										   &levels_up);
 				break;
 			case 4:
 				{
@@ -1174,9 +1169,9 @@ ExpandColumnRefStar(ParseState *pstate, ColumnRef *cref,
 					}
 					nspname = strVal(lsecond(fields));
 					relname = strVal(lthird(fields));
-					nsitem = refnameNamespaceItem(pstate, nspname, relname,
-												  cref->location,
-												  &levels_up);
+					rte = refnameRangeTblEntry(pstate, nspname, relname,
+											   cref->location,
+											   &levels_up);
 					break;
 				}
 			default:
@@ -1189,19 +1184,17 @@ ExpandColumnRefStar(ParseState *pstate, ColumnRef *cref,
 		 * bit by passing the RangeTblEntry, not a Var, as the planned
 		 * translation.  (A single Var wouldn't be strictly correct anyway.
 		 * This convention allows hooks that really care to know what is
-		 * happening.  It might be better to pass the nsitem, but we'd have to
-		 * promote that struct to a full-fledged Node type so that callees
-		 * could identify its type.)
+		 * happening.)
 		 */
 		if (pstate->p_post_columnref_hook != NULL)
 		{
 			Node	   *node;
 
 			node = pstate->p_post_columnref_hook(pstate, cref,
-												 (Node *) (nsitem ? nsitem->p_rte : NULL));
+												 (Node *) rte);
 			if (node != NULL)
 			{
-				if (nsitem != NULL)
+				if (rte != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_AMBIGUOUS_COLUMN),
 							 errmsg("column reference \"%s\" is ambiguous",
@@ -1214,7 +1207,7 @@ ExpandColumnRefStar(ParseState *pstate, ColumnRef *cref,
 		/*
 		 * Throw error if no translation found.
 		 */
-		if (nsitem == NULL)
+		if (rte == NULL)
 		{
 			switch (crserr)
 			{
@@ -1240,10 +1233,9 @@ ExpandColumnRefStar(ParseState *pstate, ColumnRef *cref,
 		}
 
 		/*
-		 * OK, expand the nsitem into fields.
+		 * OK, expand the RTE into fields.
 		 */
-		return ExpandSingleTable(pstate, nsitem, levels_up, cref->location,
-								 make_target_entry);
+		return ExpandSingleTable(pstate, rte, cref->location, make_target_entry);
 	}
 }
 
@@ -1268,6 +1260,7 @@ ExpandAllTables(ParseState *pstate, int location)
 	foreach(l, pstate->p_namespace)
 	{
 		ParseNamespaceItem *nsitem = (ParseNamespaceItem *) lfirst(l);
+		RangeTblEntry *rte = nsitem->p_rte;
 
 		/* Ignore table-only items */
 		if (!nsitem->p_cols_visible)
@@ -1278,10 +1271,12 @@ ExpandAllTables(ParseState *pstate, int location)
 		found_table = true;
 
 		target = list_concat(target,
-							 expandNSItemAttrs(pstate,
-											   nsitem,
-											   0,
-											   location));
+							 expandRelAttrs(pstate,
+											rte,
+											RTERangeTablePosn(pstate, rte,
+															  NULL),
+											0,
+											location));
 	}
 
 	/*
@@ -1337,21 +1332,27 @@ ExpandIndirectionStar(ParseState *pstate, A_Indirection *ind,
  * The referenced columns are marked as requiring SELECT access.
  */
 static List *
-ExpandSingleTable(ParseState *pstate, ParseNamespaceItem *nsitem,
-				  int sublevels_up, int location, bool make_target_entry)
+ExpandSingleTable(ParseState *pstate, RangeTblEntry *rte,
+				  int location, bool make_target_entry)
 {
+	int			sublevels_up;
+	int			rtindex;
+
+	rtindex = RTERangeTablePosn(pstate, rte, &sublevels_up);
+
 	if (make_target_entry)
 	{
-		/* expandNSItemAttrs handles permissions marking */
-		return expandNSItemAttrs(pstate, nsitem, sublevels_up, location);
+		/* expandRelAttrs handles permissions marking */
+		return expandRelAttrs(pstate, rte, rtindex, sublevels_up,
+							  location);
 	}
 	else
 	{
-		RangeTblEntry *rte = nsitem->p_rte;
 		List	   *vars;
 		ListCell   *l;
 
-		vars = expandNSItemVars(nsitem, sublevels_up, location, NULL);
+		expandRTE(rte, rtindex, sublevels_up, location, false,
+				  NULL, &vars);
 
 		/*
 		 * Require read access to the table.  This is normally redundant with
@@ -1401,10 +1402,10 @@ ExpandRowReference(ParseState *pstate, Node *expr,
 		((Var *) expr)->varattno == InvalidAttrNumber)
 	{
 		Var		   *var = (Var *) expr;
-		ParseNamespaceItem *nsitem;
+		RangeTblEntry *rte;
 
-		nsitem = GetNSItemByRangeTablePosn(pstate, var->varno, var->varlevelsup);
-		return ExpandSingleTable(pstate, nsitem, var->varlevelsup, var->location, make_target_entry);
+		rte = GetRTEByRangeTablePosn(pstate, var->varno, var->varlevelsup);
+		return ExpandSingleTable(pstate, rte, var->location, make_target_entry);
 	}
 
 	/*
@@ -1487,12 +1488,6 @@ expandRecordVariable(ParseState *pstate, Var *var, int levelsup)
 	Assert(IsA(var, Var));
 	Assert(var->vartype == RECORDOID);
 
-	/*
-	 * Note: it's tempting to use GetNSItemByRangeTablePosn here so that we
-	 * can use expandNSItemVars instead of expandRTE; but that does not work
-	 * for some of the recursion cases below, where we have consed up a
-	 * ParseState that lacks p_namespace data.
-	 */
 	netlevelsup = var->varlevelsup + levelsup;
 	rte = GetRTEByRangeTablePosn(pstate, var->varno, netlevelsup);
 	attnum = var->varattno;

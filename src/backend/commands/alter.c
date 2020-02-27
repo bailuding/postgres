@@ -3,7 +3,7 @@
  * alter.c
  *	  Drivers for generic alter commands
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -34,8 +34,8 @@
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_opfamily.h"
 #include "catalog/pg_proc.h"
-#include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_subscription.h"
+#include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_ts_config.h"
 #include "catalog/pg_ts_dict.h"
 #include "catalog/pg_ts_parser.h"
@@ -57,8 +57,8 @@
 #include "commands/trigger.h"
 #include "commands/typecmds.h"
 #include "commands/user.h"
-#include "miscadmin.h"
 #include "parser/parse_func.h"
+#include "miscadmin.h"
 #include "rewrite/rewriteDefine.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
@@ -66,6 +66,7 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+
 
 static Oid	AlterObjectNamespace_internal(Relation rel, Oid objid, Oid nspOid);
 
@@ -212,8 +213,8 @@ AlterObjectRename_internal(Relation rel, Oid objectId, const char *new_name)
 		if (Anum_owner <= 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("must be superuser to rename %s",
-							getObjectDescriptionOids(classId, objectId))));
+					 (errmsg("must be superuser to rename %s",
+							 getObjectDescriptionOids(classId, objectId)))));
 
 		/* Otherwise, must be owner of the existing object */
 		datum = heap_getattr(oldtup, Anum_owner,
@@ -437,17 +438,6 @@ ExecAlterObjectDependsStmt(AlterObjectDependsStmt *stmt, ObjectAddress *refAddre
 	address =
 		get_object_address_rv(stmt->objectType, stmt->relation, (List *) stmt->object,
 							  &rel, AccessExclusiveLock, false);
-
-	/*
-	 * Verify that the user is entitled to run the command.
-	 *
-	 * We don't check any privileges on the extension, because that's not
-	 * needed.  The object owner is stipulating, by running this command, that
-	 * the extension owner can drop the object whenever they feel like it,
-	 * which is not considered a problem.
-	 */
-	check_object_ownership(GetUserId(),
-						   stmt->objectType, address, stmt->object, rel);
 
 	/*
 	 * If a relation was involved, it would have been opened and locked. We
@@ -726,8 +716,8 @@ AlterObjectNamespace_internal(Relation rel, Oid objid, Oid nspOid)
 		if (Anum_owner <= 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("must be superuser to set schema of %s",
-							getObjectDescriptionOids(classId, objid))));
+					 (errmsg("must be superuser to set schema of %s",
+							 getObjectDescriptionOids(classId, objid)))));
 
 		/* Otherwise, must be owner of the existing object */
 		owner = heap_getattr(tup, Anum_owner, RelationGetDescr(rel), &isnull);

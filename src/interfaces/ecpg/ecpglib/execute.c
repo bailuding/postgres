@@ -19,18 +19,19 @@
 #include <math.h>
 
 #include "catalog/pg_type_d.h"
-#include "ecpgerrno.h"
-#include "ecpglib.h"
-#include "ecpglib_extern.h"
+
 #include "ecpgtype.h"
-#include "pgtypes_date.h"
-#include "pgtypes_interval.h"
-#include "pgtypes_numeric.h"
-#include "pgtypes_timestamp.h"
-#include "sql3types.h"
+#include "ecpglib.h"
+#include "ecpgerrno.h"
+#include "ecpglib_extern.h"
 #include "sqlca.h"
-#include "sqlda-compat.h"
 #include "sqlda-native.h"
+#include "sqlda-compat.h"
+#include "sql3types.h"
+#include "pgtypes_numeric.h"
+#include "pgtypes_date.h"
+#include "pgtypes_timestamp.h"
+#include "pgtypes_interval.h"
 
 /*
  *	This function returns a newly malloced string that has ' and \
@@ -543,11 +544,13 @@ ecpg_store_input(const int lineno, const bool force_indicator, const struct vari
 			if (*(long *) var->ind_value < 0L)
 				*tobeinserted_p = NULL;
 			break;
+#ifdef HAVE_LONG_LONG_INT
 		case ECPGt_long_long:
 		case ECPGt_unsigned_long_long:
 			if (*(long long int *) var->ind_value < (long long) 0)
 				*tobeinserted_p = NULL;
 			break;
+#endif							/* HAVE_LONG_LONG_INT */
 		case ECPGt_NO_INDICATOR:
 			if (force_indicator == false)
 			{
@@ -679,7 +682,7 @@ ecpg_store_input(const int lineno, const bool force_indicator, const struct vari
 
 				*tobeinserted_p = mallocedval;
 				break;
-
+#ifdef HAVE_LONG_LONG_INT
 			case ECPGt_long_long:
 				if (!(mallocedval = ecpg_alloc(asize * 30, lineno)))
 					return false;
@@ -717,7 +720,7 @@ ecpg_store_input(const int lineno, const bool force_indicator, const struct vari
 
 				*tobeinserted_p = mallocedval;
 				break;
-
+#endif							/* HAVE_LONG_LONG_INT */
 			case ECPGt_float:
 				if (!(mallocedval = ecpg_alloc(asize * 25, lineno)))
 					return false;
@@ -1499,37 +1502,26 @@ ecpg_build_params(struct statement *stmt)
 		}
 		else
 		{
-			bool		realloc_failed = false;
-			char	  **newparamvalues;
-			int		   *newparamlengths;
-			int		   *newparamformats;
-
-			/* enlarge all the param arrays */
-			if ((newparamvalues = (char **) ecpg_realloc(stmt->paramvalues, sizeof(char *) * (stmt->nparams + 1), stmt->lineno)))
-				stmt->paramvalues = newparamvalues;
-			else
-				realloc_failed = true;
-
-			if ((newparamlengths = (int *) ecpg_realloc(stmt->paramlengths, sizeof(int) * (stmt->nparams + 1), stmt->lineno)))
-				stmt->paramlengths = newparamlengths;
-			else
-				realloc_failed = true;
-
-			if ((newparamformats = (int *) ecpg_realloc(stmt->paramformats, sizeof(int) * (stmt->nparams + 1), stmt->lineno)))
-				stmt->paramformats = newparamformats;
-			else
-				realloc_failed = true;
-
-			if (realloc_failed)
+			if (!(stmt->paramvalues = (char **) ecpg_realloc(stmt->paramvalues, sizeof(char *) * (stmt->nparams + 1), stmt->lineno)))
 			{
 				ecpg_free_params(stmt, false);
 				ecpg_free(tobeinserted);
 				return false;
 			}
-
-			/* only now can we assign ownership of "tobeinserted" to stmt */
 			stmt->paramvalues[stmt->nparams] = tobeinserted;
+
+			if (!(stmt->paramlengths = (int *) ecpg_realloc(stmt->paramlengths, sizeof(int) * (stmt->nparams + 1), stmt->lineno)))
+			{
+				ecpg_free_params(stmt, false);
+				return false;
+			}
 			stmt->paramlengths[stmt->nparams] = binary_length;
+
+			if (!(stmt->paramformats = (int *) ecpg_realloc(stmt->paramformats, sizeof(int) * (stmt->nparams + 1), stmt->lineno)))
+			{
+				ecpg_free_params(stmt, false);
+				return false;
+			}
 			stmt->paramformats[stmt->nparams] = (binary_format ? 1 : 0);
 			stmt->nparams++;
 
@@ -1907,7 +1899,7 @@ ecpg_process_output(struct statement *stmt, bool clear_result)
 
 			/*
 			 * execution should never reach this code because it is already
-			 * handled in ecpg_check_PQresult()
+			 * handled in ECPGcheck_PQresult()
 			 */
 			ecpg_log("ecpg_process_output on line %d: unknown execution status type\n",
 					 stmt->lineno);
@@ -2070,9 +2062,8 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 	/*------
 	 * create a list of variables
 	 *
-	 * The variables are listed with input variables preceding output
-	 * variables.  The end of each group is marked by an end marker.
-	 * Per variable we list:
+	 * The variables are listed with input variables preceding outputvariables
+	 * The end of each group is marked by an end marker. per variable we list:
 	 *
 	 * type - as defined in ecpgtype.h
 	 * value - where to store the data
@@ -2082,9 +2073,9 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 	 * offset - offset between ith and (i+1)th entry in an array, normally
 	 * that means sizeof(type)
 	 * ind_type - type of indicator variable
-	 * ind_pointer - pointer to indicator variable
+	 * ind_value - pointer to indicator variable
 	 * ind_varcharsize - empty
-	 * ind_arrsize - arraysize of indicator array
+	 * ind_arraysize - arraysize of indicator array
 	 * ind_offset - indicator offset
 	 *------
 	 */

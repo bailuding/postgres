@@ -3,7 +3,7 @@
  * hash.c
  *	  Implementation of Margo Seltzer's Hashing package for postgres.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -31,6 +31,8 @@
 #include "utils/builtins.h"
 #include "utils/index_selfuncs.h"
 #include "utils/rel.h"
+#include "miscadmin.h"
+
 
 /* Working state for hashbuild and its callback */
 typedef struct
@@ -41,7 +43,7 @@ typedef struct
 } HashBuildState;
 
 static void hashbuildCallback(Relation index,
-							  ItemPointer tid,
+							  HeapTuple htup,
 							  Datum *values,
 							  bool *isnull,
 							  bool tupleIsAlive,
@@ -72,9 +74,6 @@ hashhandler(PG_FUNCTION_ARGS)
 	amroutine->ampredlocks = true;
 	amroutine->amcanparallel = false;
 	amroutine->amcaninclude = false;
-	amroutine->amusemaintenanceworkmem = false;
-	amroutine->amparallelvacuumoptions =
-		VACUUM_OPTION_PARALLEL_BULKDEL;
 	amroutine->amkeytype = INT4OID;
 
 	amroutine->ambuild = hashbuild;
@@ -202,7 +201,7 @@ hashbuildempty(Relation index)
  */
 static void
 hashbuildCallback(Relation index,
-				  ItemPointer tid,
+				  HeapTuple htup,
 				  Datum *values,
 				  bool *isnull,
 				  bool tupleIsAlive,
@@ -221,13 +220,14 @@ hashbuildCallback(Relation index,
 
 	/* Either spool the tuple for sorting, or just put it into the index */
 	if (buildstate->spool)
-		_h_spool(buildstate->spool, tid, index_values, index_isnull);
+		_h_spool(buildstate->spool, &htup->t_self,
+				 index_values, index_isnull);
 	else
 	{
 		/* form an index tuple and point it at the heap tuple */
 		itup = index_form_tuple(RelationGetDescr(index),
 								index_values, index_isnull);
-		itup->t_tid = *tid;
+		itup->t_tid = htup->t_self;
 		_hash_doinsert(index, itup, buildstate->heapRel);
 		pfree(itup);
 	}

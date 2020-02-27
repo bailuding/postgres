@@ -4,7 +4,7 @@
  *	  definition of the "relation" system catalog (pg_class)
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_class.h
@@ -24,9 +24,6 @@
 /* ----------------
  *		pg_class definition.  cpp turns this into
  *		typedef struct FormData_pg_class
- *
- * Note that the BKI_DEFAULT values below are only used for rows describing
- * BKI_BOOTSTRAP catalogs, since only those rows appear in pg_class.dat.
  * ----------------
  */
 CATALOG(pg_class,1259,RelationRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(83,RelationRelation_Rowtype_Id) BKI_SCHEMA_MACRO
@@ -50,41 +47,41 @@ CATALOG(pg_class,1259,RelationRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(83,Relat
 	Oid			relowner BKI_DEFAULT(PGUID);
 
 	/* access method; 0 if not a table / index */
-	Oid			relam BKI_DEFAULT(heap) BKI_LOOKUP(pg_am);
+	Oid			relam BKI_LOOKUP(pg_am);
 
 	/* identifier of physical storage file */
 	/* relfilenode == 0 means it is a "mapped" relation, see relmapper.c */
-	Oid			relfilenode BKI_DEFAULT(0);
+	Oid			relfilenode;
 
 	/* identifier of table space for relation (0 means default for database) */
 	Oid			reltablespace BKI_DEFAULT(0) BKI_LOOKUP(pg_tablespace);
 
 	/* # of blocks (not always up-to-date) */
-	int32		relpages BKI_DEFAULT(0);
+	int32		relpages;
 
 	/* # of tuples (not always up-to-date) */
-	float4		reltuples BKI_DEFAULT(0);
+	float4		reltuples;
 
 	/* # of all-visible blocks (not always up-to-date) */
-	int32		relallvisible BKI_DEFAULT(0);
+	int32		relallvisible;
 
 	/* OID of toast table; 0 if none */
-	Oid			reltoastrelid BKI_DEFAULT(0);
+	Oid			reltoastrelid;
 
 	/* T if has (or has had) any indexes */
-	bool		relhasindex BKI_DEFAULT(f);
+	bool		relhasindex;
 
 	/* T if shared across databases */
-	bool		relisshared BKI_DEFAULT(f);
+	bool		relisshared;
 
 	/* see RELPERSISTENCE_xxx constants below */
-	char		relpersistence BKI_DEFAULT(p);
+	char		relpersistence;
 
 	/* see RELKIND_xxx constants below */
-	char		relkind BKI_DEFAULT(r);
+	char		relkind;
 
 	/* number of user attributes */
-	int16		relnatts BKI_DEFAULT(0);	/* genbki.pl will fill this in */
+	int16		relnatts;
 
 	/*
 	 * Class pg_attribute must contain exactly "relnatts" user attributes
@@ -93,51 +90,51 @@ CATALOG(pg_class,1259,RelationRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(83,Relat
 	 */
 
 	/* # of CHECK constraints for class */
-	int16		relchecks BKI_DEFAULT(0);
+	int16		relchecks;
 
 	/* has (or has had) any rules */
-	bool		relhasrules BKI_DEFAULT(f);
+	bool		relhasrules;
 
 	/* has (or has had) any TRIGGERs */
-	bool		relhastriggers BKI_DEFAULT(f);
+	bool		relhastriggers;
 
 	/* has (or has had) child tables or indexes */
-	bool		relhassubclass BKI_DEFAULT(f);
+	bool		relhassubclass;
 
 	/* row security is enabled or not */
-	bool		relrowsecurity BKI_DEFAULT(f);
+	bool		relrowsecurity;
 
 	/* row security forced for owners or not */
-	bool		relforcerowsecurity BKI_DEFAULT(f);
+	bool		relforcerowsecurity;
 
 	/* matview currently holds query results */
-	bool		relispopulated BKI_DEFAULT(t);
+	bool		relispopulated;
 
 	/* see REPLICA_IDENTITY_xxx constants */
-	char		relreplident BKI_DEFAULT(n);
+	char		relreplident;
 
 	/* is relation a partition? */
-	bool		relispartition BKI_DEFAULT(f);
+	bool		relispartition;
 
 	/* heap for rewrite during DDL, link to original rel */
 	Oid			relrewrite BKI_DEFAULT(0);
 
 	/* all Xids < this are frozen in this rel */
-	TransactionId relfrozenxid BKI_DEFAULT(3);	/* FirstNormalTransactionId */
+	TransactionId relfrozenxid;
 
 	/* all multixacts in this rel are >= this; it is really a MultiXactId */
-	TransactionId relminmxid BKI_DEFAULT(1);	/* FirstMultiXactId */
+	TransactionId relminmxid;
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 	/* NOTE: These fields are not present in a relcache entry's rd_rel field. */
 	/* access permissions */
-	aclitem		relacl[1] BKI_DEFAULT(_null_);
+	aclitem		relacl[1];
 
 	/* access-method-specific options */
-	text		reloptions[1] BKI_DEFAULT(_null_);
+	text		reloptions[1];
 
 	/* partition bound node tree */
-	pg_node_tree relpartbound BKI_DEFAULT(_null_);
+	pg_node_tree relpartbound;
 #endif
 } FormData_pg_class;
 

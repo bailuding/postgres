@@ -15,9 +15,11 @@
 #include <signal.h>
 #include <sys/time.h>
 
-#include "access/xlog_internal.h"
-#include "common/logging.h"
 #include "pg_getopt.h"
+
+#include "common/logging.h"
+
+#include "access/xlog_internal.h"
 
 const char *progname;
 

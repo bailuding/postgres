@@ -6,7 +6,7 @@
  * and interpreting backend output.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/fe_utils/string_utils.c
@@ -17,8 +17,10 @@
 
 #include <ctype.h>
 
-#include "common/keywords.h"
 #include "fe_utils/string_utils.h"
+
+#include "common/keywords.h"
+
 
 static PQExpBuffer defaultGetLocalPQExpBuffer(void);
 
@@ -622,10 +624,10 @@ appendPsqlMetaConnect(PQExpBuffer buf, const char *dbname)
 		PQExpBufferData connstr;
 
 		initPQExpBuffer(&connstr);
-		appendPQExpBufferStr(&connstr, "dbname=");
+		appendPQExpBuffer(&connstr, "dbname=");
 		appendConnStrVal(&connstr, dbname);
 
-		appendPQExpBufferStr(buf, "-reuse-previous=on ");
+		appendPQExpBuffer(buf, "-reuse-previous=on ");
 
 		/*
 		 * As long as the name does not contain a newline, SQL identifier

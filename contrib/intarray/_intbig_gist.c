@@ -3,10 +3,11 @@
  */
 #include "postgres.h"
 
-#include "_int.h"
 #include "access/gist.h"
 #include "access/stratnum.h"
 #include "port/pg_bitutils.h"
+
+#include "_int.h"
 
 #define GETENTRY(vec,pos) ((GISTTYPE *) DatumGetPointer((vec)->vector[(pos)].key))
 /*

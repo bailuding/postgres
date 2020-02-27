@@ -2,7 +2,7 @@
  *
  * pg_dumpall.c
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * pg_dumpall forces all pg_dump output to be text, since it also outputs
@@ -18,13 +18,14 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "getopt_long.h"
+
+#include "dumputils.h"
+#include "pg_backup.h"
 #include "common/file_utils.h"
 #include "common/logging.h"
-#include "dumputils.h"
 #include "fe_utils/connect.h"
 #include "fe_utils/string_utils.h"
-#include "getopt_long.h"
-#include "pg_backup.h"
 
 /* version string we expect back from pg_dump */
 #define PGDUMP_VERSIONSTR "pg_dump (PostgreSQL) " PG_VERSION "\n"
@@ -1431,8 +1432,8 @@ expand_dbname_patterns(PGconn *conn,
 
 	for (SimpleStringListCell *cell = patterns->head; cell; cell = cell->next)
 	{
-		appendPQExpBufferStr(query,
-							 "SELECT datname FROM pg_catalog.pg_database n\n");
+		appendPQExpBuffer(query,
+						  "SELECT datname FROM pg_catalog.pg_database n\n");
 		processSQLNamePattern(conn, query, cell->val, false,
 							  false, NULL, "datname", NULL, NULL);
 

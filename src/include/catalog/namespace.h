@@ -4,7 +4,7 @@
  *	  prototypes for functions in backend/catalog/namespace.c
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/namespace.h
@@ -105,7 +105,7 @@ extern Oid	ConversionGetConid(const char *conname);
 extern bool ConversionIsVisible(Oid conid);
 
 extern Oid	get_statistics_object_oid(List *names, bool missing_ok);
-extern bool StatisticsObjIsVisible(Oid relid);
+extern bool StatisticsObjIsVisible(Oid stxid);
 
 extern Oid	get_ts_parser_oid(List *names, bool missing_ok);
 extern bool TSParserIsVisible(Oid prsId);

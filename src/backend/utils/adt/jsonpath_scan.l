@@ -7,7 +7,7 @@
  * Splits jsonpath string into tokens represented as JsonPathString structs.
  * Decodes unicode and hex escaped strings.
  *
- * Copyright (c) 2019-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	src/backend/utils/adt/jsonpath_scan.l
@@ -323,7 +323,6 @@ static const JsonPathKeyword keywords[] = {
 	{ 6, false,	STRICT_P,	"strict"},
 	{ 7, false,	CEILING_P,	"ceiling"},
 	{ 7, false,	UNKNOWN_P,	"unknown"},
-	{ 8, false,	DATETIME_P,	"datetime"},
 	{ 8, false,	KEYVALUE_P,	"keyvalue"},
 	{ 10,false, LIKE_REGEX_P, "like_regex"},
 };

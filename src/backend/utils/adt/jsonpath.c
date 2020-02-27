@@ -53,7 +53,7 @@
  * |	  |__|	|__||________________________||___________________|		   |
  * |_______________________________________________________________________|
  *
- * Copyright (c) 2019-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	src/backend/utils/adt/jsonpath.c
@@ -337,14 +337,12 @@ flattenJsonPathParseItem(StringInfo buf, JsonPathParseItem *item,
 		case jpiPlus:
 		case jpiMinus:
 		case jpiExists:
-		case jpiDatetime:
 			{
 				int32		arg = reserveSpaceForItemPointer(buf);
 
-				chld = !item->value.arg ? pos :
-					flattenJsonPathParseItem(buf, item->value.arg,
-											 nestingLevel + argNestingLevel,
-											 insideArraySubscript);
+				chld = flattenJsonPathParseItem(buf, item->value.arg,
+												nestingLevel + argNestingLevel,
+												insideArraySubscript);
 				*(int32 *) (buf->data + arg) = chld - pos;
 			}
 			break;
@@ -694,15 +692,6 @@ printJsonPathItem(StringInfo buf, JsonPathItem *v, bool inKey,
 		case jpiDouble:
 			appendBinaryStringInfo(buf, ".double()", 9);
 			break;
-		case jpiDatetime:
-			appendBinaryStringInfo(buf, ".datetime(", 10);
-			if (v->content.arg)
-			{
-				jspGetArg(v, &elem);
-				printJsonPathItem(buf, &elem, false, false);
-			}
-			appendStringInfoChar(buf, ')');
-			break;
 		case jpiKeyValue:
 			appendBinaryStringInfo(buf, ".keyvalue()", 11);
 			break;
@@ -765,8 +754,6 @@ jspOperationName(JsonPathItemType type)
 			return "floor";
 		case jpiCeiling:
 			return "ceiling";
-		case jpiDatetime:
-			return "datetime";
 		default:
 			elog(ERROR, "unrecognized jsonpath item type: %d", type);
 			return NULL;
@@ -902,7 +889,6 @@ jspInitByBuffer(JsonPathItem *v, char *base, int32 pos)
 		case jpiPlus:
 		case jpiMinus:
 		case jpiFilter:
-		case jpiDatetime:
 			read_int32(v->content.arg, base, pos);
 			break;
 		case jpiIndexArray:
@@ -927,8 +913,7 @@ jspGetArg(JsonPathItem *v, JsonPathItem *a)
 		   v->type == jpiIsUnknown ||
 		   v->type == jpiExists ||
 		   v->type == jpiPlus ||
-		   v->type == jpiMinus ||
-		   v->type == jpiDatetime);
+		   v->type == jpiMinus);
 
 	jspInitByBuffer(a, v->base, v->content.arg);
 }
@@ -976,7 +961,6 @@ jspGetNext(JsonPathItem *v, JsonPathItem *a)
 			   v->type == jpiFloor ||
 			   v->type == jpiCeiling ||
 			   v->type == jpiDouble ||
-			   v->type == jpiDatetime ||
 			   v->type == jpiKeyValue ||
 			   v->type == jpiStartsWith);
 

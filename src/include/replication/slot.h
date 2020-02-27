@@ -2,13 +2,14 @@
  * slot.h
  *	   Replication slot management.
  *
- * Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2019, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
 #ifndef SLOT_H
 #define SLOT_H
 
+#include "fmgr.h"
 #include "access/xlog.h"
 #include "access/xlogreader.h"
 #include "storage/condition_variable.h"

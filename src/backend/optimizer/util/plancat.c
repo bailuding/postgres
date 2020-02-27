@@ -4,7 +4,7 @@
  *	   routines for accessing the system catalogs
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,9 +20,9 @@
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/nbtree.h"
+#include "access/tableam.h"
 #include "access/sysattr.h"
 #include "access/table.h"
-#include "access/tableam.h"
 #include "access/transam.h"
 #include "access/xlog.h"
 #include "catalog/catalog.h"
@@ -40,9 +40,9 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/plancat.h"
 #include "optimizer/prep.h"
+#include "partitioning/partdesc.h"
 #include "parser/parse_relation.h"
 #include "parser/parsetree.h"
-#include "partitioning/partdesc.h"
 #include "rewrite/rewriteManip.h"
 #include "statistics/statistics.h"
 #include "storage/bufmgr.h"
@@ -50,8 +50,9 @@
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/snapmgr.h"
+
 
 /* GUC parameter */
 int			constraint_exclusion = CONSTRAINT_EXCLUSION_PARTITION;
@@ -77,9 +78,6 @@ static void set_relation_partition_info(PlannerInfo *root, RelOptInfo *rel,
 static PartitionScheme find_partition_scheme(PlannerInfo *root, Relation rel);
 static void set_baserel_partition_key_exprs(Relation relation,
 											RelOptInfo *rel);
-static void set_baserel_partition_constraint(Relation relation,
-											 RelOptInfo *rel);
-
 
 /*
  * get_relation_info -
@@ -421,13 +419,6 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 			index_close(indexRelation, NoLock);
 
-			/*
-			 * We've historically used lcons() here.  It'd make more sense to
-			 * use lappend(), but that causes the planner to change behavior
-			 * in cases where two indexes seem equally attractive.  For now,
-			 * stick with lcons() --- few tables should have so many indexes
-			 * that the O(N^2) behavior of lcons() is really a problem.
-			 */
 			indexinfos = lcons(info, indexinfos);
 		}
 
@@ -1269,9 +1260,25 @@ get_relation_constraints(PlannerInfo *root,
 	 */
 	if (include_partition && relation->rd_rel->relispartition)
 	{
-		/* make sure rel->partition_qual is set */
-		set_baserel_partition_constraint(relation, rel);
-		result = list_concat(result, rel->partition_qual);
+		List	   *pcqual = RelationGetPartitionQual(relation);
+
+		if (pcqual)
+		{
+			/*
+			 * Run the partition quals through const-simplification similar to
+			 * check constraints.  We skip canonicalize_qual, though, because
+			 * partition quals should be in canonical form already; also,
+			 * since the qual is in implicit-AND format, we'd have to
+			 * explicitly convert it to explicit-AND format and back again.
+			 */
+			pcqual = (List *) eval_const_expressions(root, (Node *) pcqual);
+
+			/* Fix Vars to have the desired varno */
+			if (varno != 1)
+				ChangeVarNodes((Node *) pcqual, 1, varno, 0);
+
+			result = list_concat(result, pcqual);
+		}
 	}
 
 	table_close(relation, NoLock);
@@ -1332,7 +1339,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->kind = STATS_EXT_NDISTINCT;
 			info->keys = bms_copy(keys);
 
-			stainfos = lappend(stainfos, info);
+			stainfos = lcons(info, stainfos);
 		}
 
 		if (statext_is_kind_built(dtup, STATS_EXT_DEPENDENCIES))
@@ -1344,7 +1351,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->kind = STATS_EXT_DEPENDENCIES;
 			info->keys = bms_copy(keys);
 
-			stainfos = lappend(stainfos, info);
+			stainfos = lcons(info, stainfos);
 		}
 
 		if (statext_is_kind_built(dtup, STATS_EXT_MCV))
@@ -1356,7 +1363,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->kind = STATS_EXT_MCV;
 			info->keys = bms_copy(keys);
 
-			stainfos = lappend(stainfos, info);
+			stainfos = lcons(info, stainfos);
 		}
 
 		ReleaseSysCache(htup);
@@ -1735,7 +1742,7 @@ build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
 			if (indexpr_item == NULL)
 				elog(ERROR, "wrong number of index expressions");
 			indexvar = (Expr *) lfirst(indexpr_item);
-			indexpr_item = lnext(index->indexprs, indexpr_item);
+			indexpr_item = lnext(indexpr_item);
 		}
 
 		tlist = lappend(tlist,
@@ -2102,12 +2109,12 @@ has_stored_generated_columns(PlannerInfo *root, Index rti)
 	bool		result = false;
 
 	/* Assume we already have adequate lock */
-	relation = table_open(rte->relid, NoLock);
+	relation = heap_open(rte->relid, NoLock);
 
 	tupdesc = RelationGetDescr(relation);
 	result = tupdesc->constr && tupdesc->constr->has_generated_stored;
 
-	table_close(relation, NoLock);
+	heap_close(relation, NoLock);
 
 	return result;
 }
@@ -2135,7 +2142,7 @@ set_relation_partition_info(PlannerInfo *root, RelOptInfo *rel,
 	rel->boundinfo = partdesc->boundinfo;
 	rel->nparts = partdesc->nparts;
 	set_baserel_partition_key_exprs(relation, rel);
-	set_baserel_partition_constraint(relation, rel);
+	rel->partition_qual = RelationGetPartitionQual(relation);
 }
 
 /*
@@ -2294,7 +2301,7 @@ set_baserel_partition_key_exprs(Relation relation,
 			/* Re-stamp the expression with given varno. */
 			partexpr = (Expr *) copyObject(lfirst(lc));
 			ChangeVarNodes((Node *) partexpr, 1, varno, 0);
-			lc = lnext(partkey->partexprs, lc);
+			lc = lnext(lc);
 		}
 
 		partexprs[cnt] = list_make1(partexpr);
@@ -2309,36 +2316,4 @@ set_baserel_partition_key_exprs(Relation relation,
 	 * match_expr_to_partition_keys().
 	 */
 	rel->nullable_partexprs = (List **) palloc0(sizeof(List *) * partnatts);
-}
-
-/*
- * set_baserel_partition_constraint
- *
- * Builds the partition constraint for the given base relation and sets it
- * in the given RelOptInfo.  All Var nodes are restamped with the relid of the
- * given relation.
- */
-static void
-set_baserel_partition_constraint(Relation relation, RelOptInfo *rel)
-{
-	List	   *partconstr;
-
-	if (rel->partition_qual)	/* already done */
-		return;
-
-	/*
-	 * Run the partition quals through const-simplification similar to check
-	 * constraints.  We skip canonicalize_qual, though, because partition
-	 * quals should be in canonical form already; also, since the qual is in
-	 * implicit-AND format, we'd have to explicitly convert it to explicit-AND
-	 * format and back again.
-	 */
-	partconstr = RelationGetPartitionQual(relation);
-	if (partconstr)
-	{
-		partconstr = (List *) expression_planner((Expr *) partconstr);
-		if (rel->relid != 1)
-			ChangeVarNodes((Node *) partconstr, 1, rel->relid, 0);
-		rel->partition_qual = partconstr;
-	}
 }

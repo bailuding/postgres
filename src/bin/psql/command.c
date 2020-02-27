@@ -1,11 +1,12 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2019, PostgreSQL Global Development Group
  *
  * src/bin/psql/command.c
  */
 #include "postgres_fe.h"
+#include "command.h"
 
 #include <ctype.h>
 #include <time.h>
@@ -23,22 +24,22 @@
 #endif
 
 #include "catalog/pg_class_d.h"
-#include "command.h"
-#include "common.h"
+#include "portability/instr_time.h"
+
+#include "libpq-fe.h"
+#include "pqexpbuffer.h"
 #include "common/logging.h"
+#include "fe_utils/print.h"
+#include "fe_utils/string_utils.h"
+
+#include "common.h"
 #include "copy.h"
 #include "crosstabview.h"
 #include "describe.h"
-#include "fe_utils/cancel.h"
-#include "fe_utils/print.h"
-#include "fe_utils/string_utils.h"
 #include "help.h"
 #include "input.h"
 #include "large_obj.h"
-#include "libpq-fe.h"
 #include "mainloop.h"
-#include "portability/instr_time.h"
-#include "pqexpbuffer.h"
 #include "psqlscanslash.h"
 #include "settings.h"
 #include "variables.h"
@@ -318,8 +319,7 @@ exec_command(const char *cmd,
 		status = exec_command_ef_ev(scan_state, active_branch, query_buf, true);
 	else if (strcmp(cmd, "ev") == 0)
 		status = exec_command_ef_ev(scan_state, active_branch, query_buf, false);
-	else if (strcmp(cmd, "echo") == 0 || strcmp(cmd, "qecho") == 0 ||
-			 strcmp(cmd, "warn") == 0)
+	else if (strcmp(cmd, "echo") == 0 || strcmp(cmd, "qecho") == 0)
 		status = exec_command_echo(scan_state, active_branch, cmd);
 	else if (strcmp(cmd, "elif") == 0)
 		status = exec_command_elif(scan_state, cstack, query_buf);
@@ -1114,7 +1114,7 @@ exec_command_ef_ev(PsqlScanState scan_state, bool active_branch,
 }
 
 /*
- * \echo, \qecho, and \warn -- echo arguments to stdout, query output, or stderr
+ * \echo and \qecho -- echo arguments to stdout or query output
  */
 static backslashResult
 exec_command_echo(PsqlScanState scan_state, bool active_branch, const char *cmd)
@@ -1129,15 +1129,13 @@ exec_command_echo(PsqlScanState scan_state, bool active_branch, const char *cmd)
 
 		if (strcmp(cmd, "qecho") == 0)
 			fout = pset.queryFout;
-		else if (strcmp(cmd, "warn") == 0)
-			fout = stderr;
 		else
 			fout = stdout;
 
 		while ((value = psql_scan_slash_option(scan_state,
 											   OT_NORMAL, &quoted, false)))
 		{
-			if (first && !no_newline && !quoted && strcmp(value, "-n") == 0)
+			if (!quoted && strcmp(value, "-n") == 0)
 				no_newline = true;
 			else
 			{
@@ -2994,7 +2992,7 @@ do_connect(enum trivalue reuse_previous_specification,
 	if (!dbname && reuse_previous)
 	{
 		initPQExpBuffer(&connstr);
-		appendPQExpBufferStr(&connstr, "dbname=");
+		appendPQExpBuffer(&connstr, "dbname=");
 		appendConnStrVal(&connstr, PQdb(o_conn));
 		dbname = connstr.data;
 		/* has_connection_string=true would be a dead store */
@@ -3507,8 +3505,7 @@ do_edit(const char *filename_arg, PQExpBuffer query_buf,
 		{
 			unsigned int ql = query_buf->len;
 
-			/* force newline-termination of what we send to editor */
-			if (ql > 0 && query_buf->data[ql - 1] != '\n')
+			if (ql == 0 || query_buf->data[ql - 1] != '\n')
 			{
 				appendPQExpBufferChar(query_buf, '\n');
 				ql++;
@@ -4587,7 +4584,7 @@ lookup_object_oid(EditableObjectType obj_type, const char *desc,
 			 */
 			appendPQExpBufferStr(query, "SELECT ");
 			appendStringLiteralConn(query, desc, pset.db);
-			appendPQExpBufferStr(query, "::pg_catalog.regclass::pg_catalog.oid");
+			appendPQExpBuffer(query, "::pg_catalog.regclass::pg_catalog.oid");
 			break;
 	}
 

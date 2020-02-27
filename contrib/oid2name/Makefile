@@ -4,9 +4,7 @@ PGFILEDESC = "oid2name - examine the file structure"
 PGAPPICON = win32
 
 PROGRAM = oid2name
-OBJS = \
-	$(WIN32RES) \
-	oid2name.o
+OBJS	= oid2name.o $(WIN32RES)
 
 TAP_TESTS = 1
 

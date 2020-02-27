@@ -1,9 +1,7 @@
 # contrib/jsonb_plperl/Makefile
 
 MODULE_big = jsonb_plperl
-OBJS = \
-	$(WIN32RES) \
-	jsonb_plperl.o
+OBJS = jsonb_plperl.o $(WIN32RES)
 PGFILEDESC = "jsonb_plperl - jsonb transform for plperl"
 
 PG_CPPFLAGS = -I$(top_srcdir)/src/pl/plperl

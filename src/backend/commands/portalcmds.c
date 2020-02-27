@@ -9,7 +9,7 @@
  * storage management for portals (but doesn't run any queries in them).
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -39,15 +39,14 @@
  *		Execute SQL DECLARE CURSOR command.
  */
 void
-PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo params,
-				  bool isTopLevel)
+PerformCursorOpen(DeclareCursorStmt *cstmt, ParamListInfo params,
+				  const char *queryString, bool isTopLevel)
 {
 	Query	   *query = castNode(Query, cstmt->query);
 	List	   *rewritten;
 	PlannedStmt *plan;
 	Portal		portal;
 	MemoryContext oldContext;
-	char	   *queryString;
 
 	/*
 	 * Disallow empty-string cursor name (conflicts with protocol-level
@@ -93,7 +92,7 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 	plan = pg_plan_query(query, cstmt->options, params);
 
 	/*
-	 * Create a portal and copy the plan and query string into its memory.
+	 * Create a portal and copy the plan and queryString into its memory.
 	 */
 	portal = CreatePortal(cstmt->portalname, false, false);
 
@@ -101,7 +100,7 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 
 	plan = copyObject(plan);
 
-	queryString = pstrdup(pstate->p_sourcetext);
+	queryString = pstrdup(queryString);
 
 	PortalDefineQuery(portal,
 					  NULL,

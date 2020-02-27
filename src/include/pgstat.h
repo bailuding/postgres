@@ -3,7 +3,7 @@
  *
  *	Definitions for the PostgreSQL statistics collector daemon.
  *
- *	Copyright (c) 2001-2020, PostgreSQL Global Development Group
+ *	Copyright (c) 2001-2019, PostgreSQL Global Development Group
  *
  *	src/include/pgstat.h
  * ----------
@@ -12,6 +12,7 @@
 #define PGSTAT_H
 
 #include "datatype/timestamp.h"
+#include "fmgr.h"
 #include "libpq/pqcomm.h"
 #include "port/atomics.h"
 #include "portability/instr_time.h"
@@ -799,13 +800,13 @@ typedef enum
 {
 	WAIT_EVENT_CLIENT_READ = PG_WAIT_CLIENT,
 	WAIT_EVENT_CLIENT_WRITE,
-	WAIT_EVENT_GSS_OPEN_SERVER,
 	WAIT_EVENT_LIBPQWALRECEIVER_CONNECT,
 	WAIT_EVENT_LIBPQWALRECEIVER_RECEIVE,
 	WAIT_EVENT_SSL_OPEN_SERVER,
 	WAIT_EVENT_WAL_RECEIVER_WAIT_START,
 	WAIT_EVENT_WAL_SENDER_WAIT_WAL,
 	WAIT_EVENT_WAL_SENDER_WRITE_DATA,
+	WAIT_EVENT_GSS_OPEN_SERVER,
 } WaitEventClient;
 
 /* ----------
@@ -908,7 +909,6 @@ typedef enum
 	WAIT_EVENT_LOGICAL_REWRITE_SYNC,
 	WAIT_EVENT_LOGICAL_REWRITE_TRUNCATE,
 	WAIT_EVENT_LOGICAL_REWRITE_WRITE,
-	WAIT_EVENT_PROC_SIGNAL_BARRIER,
 	WAIT_EVENT_RELATION_MAP_READ,
 	WAIT_EVENT_RELATION_MAP_SYNC,
 	WAIT_EVENT_RELATION_MAP_WRITE,
@@ -956,7 +956,6 @@ typedef enum ProgressCommandType
 {
 	PROGRESS_COMMAND_INVALID,
 	PROGRESS_COMMAND_VACUUM,
-	PROGRESS_COMMAND_ANALYZE,
 	PROGRESS_COMMAND_CLUSTER,
 	PROGRESS_COMMAND_CREATE_INDEX
 } ProgressCommandType;
@@ -1210,9 +1209,9 @@ typedef struct PgStat_FunctionCallUsage
  * GUC parameters
  * ----------
  */
-extern PGDLLIMPORT bool pgstat_track_activities;
-extern PGDLLIMPORT bool pgstat_track_counts;
-extern PGDLLIMPORT int pgstat_track_functions;
+extern bool pgstat_track_activities;
+extern bool pgstat_track_counts;
+extern int	pgstat_track_functions;
 extern PGDLLIMPORT int pgstat_track_activity_query_size;
 extern char *pgstat_stat_directory;
 extern char *pgstat_stat_tmpname;
@@ -1403,8 +1402,7 @@ extern void pgstat_count_heap_delete(Relation rel);
 extern void pgstat_count_truncate(Relation rel);
 extern void pgstat_update_heap_dead_tuples(Relation rel, int delta);
 
-struct FunctionCallInfoBaseData;
-extern void pgstat_init_function_usage(struct FunctionCallInfoBaseData *fcinfo,
+extern void pgstat_init_function_usage(FunctionCallInfo fcinfo,
 									   PgStat_FunctionCallUsage *fcu);
 extern void pgstat_end_function_usage(PgStat_FunctionCallUsage *fcu,
 									  bool finalize);

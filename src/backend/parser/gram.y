@@ -6,7 +6,7 @@
  * gram.y
  *	  POSTGRESQL BISON rules/actions
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -252,7 +252,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		AlterOperatorStmt AlterSeqStmt AlterSystemStmt AlterTableStmt
 		AlterTblSpcStmt AlterExtensionStmt AlterExtensionContentsStmt AlterForeignTableStmt
 		AlterCompositeTypeStmt AlterUserMappingStmt
-		AlterRoleStmt AlterRoleSetStmt AlterPolicyStmt AlterStatsStmt
+		AlterRoleStmt AlterRoleSetStmt AlterPolicyStmt
 		AlterDefaultPrivilegesStmt DefACLAction
 		AnalyzeStmt CallStmt ClosePortalStmt ClusterStmt CommentStmt
 		ConstraintsSetStmt CopyStmt CreateAsStmt CreateCastStmt
@@ -310,7 +310,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <defelt>	vac_analyze_option_elem
 %type <list>	vac_analyze_option_list
 %type <node>	vac_analyze_option_arg
-%type <defelt>	drop_option
 %type <boolean>	opt_or_replace
 				opt_grant_grant_option opt_grant_admin_option
 				opt_nowait opt_if_exists opt_with_data
@@ -407,7 +406,6 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				TriggerTransitions TriggerReferencing
 				publication_name_list
 				vacuum_relation_list opt_vacuum_relation_list
-				drop_option_list
 
 %type <list>	group_by_list
 %type <node>	group_by_item empty_grouping_set rollup_clause cube_clause
@@ -598,13 +596,10 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
  * the set of keywords.  PL/pgSQL depends on this so that it can share the
  * same lexer.  If you add/change tokens here, fix PL/pgSQL to match!
  *
- * UIDENT and USCONST are reduced to IDENT and SCONST in parser.c, so that
- * they need no productions here; but we must assign token codes to them.
- *
  * DOT_DOT is unused in the core SQL grammar, and so will always provoke
  * parse errors.  It is needed by PL/pgSQL.
  */
-%token <str>	IDENT UIDENT FCONST SCONST USCONST BCONST XCONST Op
+%token <str>	IDENT FCONST SCONST BCONST XCONST Op
 %token <ival>	ICONST PARAM
 %token			TYPECAST DOT_DOT COLON_EQUALS EQUALS_GREATER
 %token			LESS_EQUALS GREATER_EQUALS NOT_EQUALS
@@ -639,7 +634,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	DOUBLE_P DROP
 
 	EACH ELSE ENABLE_P ENCODING ENCRYPTED END_P ENUM_P ESCAPE EVENT EXCEPT
-	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN EXPRESSION
+	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN
 	EXTENSION EXTERNAL EXTRACT
 
 	FALSE_P FAMILY FETCH FILTER FIRST_P FLOAT_P FOLLOWING FOR
@@ -694,8 +689,8 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	TREAT TRIGGER TRIM TRUE_P
 	TRUNCATE TRUSTED TYPE_P TYPES_P
 
-	UESCAPE UNBOUNDED UNCOMMITTED UNENCRYPTED UNION UNIQUE UNKNOWN
-	UNLISTEN UNLOGGED UNTIL UPDATE USER USING
+	UNBOUNDED UNCOMMITTED UNENCRYPTED UNION UNIQUE UNKNOWN UNLISTEN UNLOGGED
+	UNTIL UPDATE USER USING
 
 	VACUUM VALID VALIDATE VALIDATOR VALUE_P VALUES VARCHAR VARIADIC VARYING
 	VERBOSE VERSION_P VIEW VIEWS VOLATILE
@@ -857,7 +852,6 @@ stmt :
 			| AlterRoleSetStmt
 			| AlterRoleStmt
 			| AlterSubscriptionStmt
-			| AlterStatsStmt
 			| AlterTSConfigurationStmt
 			| AlterTSDictionaryStmt
 			| AlterUserMappingStmt
@@ -2127,23 +2121,6 @@ alter_table_cmd:
 					AlterTableCmd *n = makeNode(AlterTableCmd);
 					n->subtype = AT_SetNotNull;
 					n->name = $3;
-					$$ = (Node *)n;
-				}
-			/* ALTER TABLE <name> ALTER [COLUMN] <colname> DROP EXPRESSION */
-			| ALTER opt_column ColId DROP EXPRESSION
-				{
-					AlterTableCmd *n = makeNode(AlterTableCmd);
-					n->subtype = AT_DropExpression;
-					n->name = $3;
-					$$ = (Node *)n;
-				}
-			/* ALTER TABLE <name> ALTER [COLUMN] <colname> DROP EXPRESSION IF EXISTS */
-			| ALTER opt_column ColId DROP EXPRESSION IF_P EXISTS
-				{
-					AlterTableCmd *n = makeNode(AlterTableCmd);
-					n->subtype = AT_DropExpression;
-					n->name = $3;
-					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
 			/* ALTER TABLE <name> ALTER [COLUMN] <colname> SET STATISTICS <SignedIconst> */
@@ -4007,34 +3984,6 @@ CreateStatsStmt:
 				}
 			;
 
-
-/*****************************************************************************
- *
- *		QUERY :
- *				ALTER STATISTICS [IF EXISTS] stats_name
- *					SET STATISTICS  <SignedIconst>
- *
- *****************************************************************************/
-
-AlterStatsStmt:
-			ALTER STATISTICS any_name SET STATISTICS SignedIconst
-				{
-					AlterStatsStmt *n = makeNode(AlterStatsStmt);
-					n->defnames = $3;
-					n->missing_ok = false;
-					n->stxstattarget = $6;
-					$$ = (Node *)n;
-				}
-			| ALTER STATISTICS IF_P EXISTS any_name SET STATISTICS SignedIconst
-				{
-					AlterStatsStmt *n = makeNode(AlterStatsStmt);
-					n->defnames = $5;
-					n->missing_ok = true;
-					n->stxstattarget = $8;
-					$$ = (Node *)n;
-				}
-			;
-
 /*****************************************************************************
  *
  *		QUERY :
@@ -4324,17 +4273,14 @@ NumericOnly_list:	NumericOnly						{ $$ = list_make1($1); }
 CreatePLangStmt:
 			CREATE opt_or_replace opt_trusted opt_procedural LANGUAGE NonReservedWord_or_Sconst
 			{
-				/*
-				 * We now interpret parameterless CREATE LANGUAGE as
-				 * CREATE EXTENSION.  "OR REPLACE" is silently translated
-				 * to "IF NOT EXISTS", which isn't quite the same, but
-				 * seems more useful than throwing an error.  We just
-				 * ignore TRUSTED, as the previous code would have too.
-				 */
-				CreateExtensionStmt *n = makeNode(CreateExtensionStmt);
-				n->if_not_exists = $2;
-				n->extname = $6;
-				n->options = NIL;
+				CreatePLangStmt *n = makeNode(CreatePLangStmt);
+				n->replace = $2;
+				n->plname = $6;
+				/* parameters are all to be supplied by system */
+				n->plhandler = NIL;
+				n->plinline = NIL;
+				n->plvalidator = NIL;
+				n->pltrusted = false;
 				$$ = (Node *)n;
 			}
 			| CREATE opt_or_replace opt_trusted opt_procedural LANGUAGE NonReservedWord_or_Sconst
@@ -4460,7 +4406,7 @@ DropTableSpaceStmt: DROP TABLESPACE name
  *
  *		QUERY:
  *             CREATE EXTENSION extension
- *             [ WITH ] [ SCHEMA schema ] [ VERSION version ]
+ *             [ WITH ] [ SCHEMA schema ] [ VERSION version ] [ FROM oldversion ]
  *
  *****************************************************************************/
 
@@ -4500,10 +4446,7 @@ create_extension_opt_item:
 				}
 			| FROM NonReservedWord_or_Sconst
 				{
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("CREATE EXTENSION ... FROM is no longer supported"),
-							 parser_errposition(@1)));
+					$$ = makeDefElem("old_version", (Node *)makeString($2), @1);
 				}
 			| CASCADE
 				{
@@ -8803,28 +8746,6 @@ RenameStmt: ALTER AGGREGATE aggregate_with_argtypes RENAME TO name
 					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
-			| ALTER VIEW qualified_name RENAME opt_column name TO name
-				{
-					RenameStmt *n = makeNode(RenameStmt);
-					n->renameType = OBJECT_COLUMN;
-					n->relationType = OBJECT_VIEW;
-					n->relation = $3;
-					n->subname = $6;
-					n->newname = $8;
-					n->missing_ok = false;
-					$$ = (Node *)n;
-				}
-			| ALTER VIEW IF_P EXISTS qualified_name RENAME opt_column name TO name
-				{
-					RenameStmt *n = makeNode(RenameStmt);
-					n->renameType = OBJECT_COLUMN;
-					n->relationType = OBJECT_VIEW;
-					n->relation = $5;
-					n->subname = $8;
-					n->newname = $10;
-					n->missing_ok = true;
-					$$ = (Node *)n;
-				}
 			| ALTER MATERIALIZED VIEW qualified_name RENAME opt_column name TO name
 				{
 					RenameStmt *n = makeNode(RenameStmt);
@@ -10263,7 +10184,7 @@ AlterDatabaseSetStmt:
 
 /*****************************************************************************
  *
- *		DROP DATABASE [ IF EXISTS ] dbname [ [ WITH ] ( options ) ]
+ *		DROP DATABASE [ IF EXISTS ]
  *
  * This is implicitly CASCADE, no need for drop behavior
  *****************************************************************************/
@@ -10273,7 +10194,6 @@ DropdbStmt: DROP DATABASE database_name
 					DropdbStmt *n = makeNode(DropdbStmt);
 					n->dbname = $3;
 					n->missing_ok = false;
-					n->options = NULL;
 					$$ = (Node *)n;
 				}
 			| DROP DATABASE IF_P EXISTS database_name
@@ -10281,48 +10201,10 @@ DropdbStmt: DROP DATABASE database_name
 					DropdbStmt *n = makeNode(DropdbStmt);
 					n->dbname = $5;
 					n->missing_ok = true;
-					n->options = NULL;
-					$$ = (Node *)n;
-				}
-			| DROP DATABASE database_name opt_with '(' drop_option_list ')'
-				{
-					DropdbStmt *n = makeNode(DropdbStmt);
-					n->dbname = $3;
-					n->missing_ok = false;
-					n->options = $6;
-					$$ = (Node *)n;
-				}
-			| DROP DATABASE IF_P EXISTS database_name opt_with '(' drop_option_list ')'
-				{
-					DropdbStmt *n = makeNode(DropdbStmt);
-					n->dbname = $5;
-					n->missing_ok = true;
-					n->options = $8;
 					$$ = (Node *)n;
 				}
 		;
 
-drop_option_list:
-			drop_option
-				{
-					$$ = list_make1((Node *) $1);
-				}
-			| drop_option_list ',' drop_option
-				{
-					$$ = lappend($1, (Node *) $3);
-				}
-		;
-
-/*
- * Currently only the FORCE option is supported, but the syntax is designed
- * to be extensible so that we can add more options in the future if required.
- */
-drop_option:
-			FORCE
-				{
-					$$ = makeDefElem("force", NULL, @1);
-				}
-		;
 
 /*****************************************************************************
  *
@@ -13191,15 +13073,15 @@ a_expr:		c_expr									{ $$ = $1; }
 
 			| a_expr SIMILAR TO a_expr							%prec SIMILAR
 				{
-					FuncCall *n = makeFuncCall(SystemFuncName("similar_to_escape"),
-											   list_make1($4),
+					FuncCall *n = makeFuncCall(SystemFuncName("similar_escape"),
+											   list_make2($4, makeNullAConst(-1)),
 											   @2);
 					$$ = (Node *) makeSimpleA_Expr(AEXPR_SIMILAR, "~",
 												   $1, (Node *) n, @2);
 				}
 			| a_expr SIMILAR TO a_expr ESCAPE a_expr			%prec SIMILAR
 				{
-					FuncCall *n = makeFuncCall(SystemFuncName("similar_to_escape"),
+					FuncCall *n = makeFuncCall(SystemFuncName("similar_escape"),
 											   list_make2($4, $6),
 											   @2);
 					$$ = (Node *) makeSimpleA_Expr(AEXPR_SIMILAR, "~",
@@ -13207,15 +13089,15 @@ a_expr:		c_expr									{ $$ = $1; }
 				}
 			| a_expr NOT_LA SIMILAR TO a_expr					%prec NOT_LA
 				{
-					FuncCall *n = makeFuncCall(SystemFuncName("similar_to_escape"),
-											   list_make1($5),
+					FuncCall *n = makeFuncCall(SystemFuncName("similar_escape"),
+											   list_make2($5, makeNullAConst(-1)),
 											   @2);
 					$$ = (Node *) makeSimpleA_Expr(AEXPR_SIMILAR, "!~",
 												   $1, (Node *) n, @2);
 				}
 			| a_expr NOT_LA SIMILAR TO a_expr ESCAPE a_expr		%prec NOT_LA
 				{
-					FuncCall *n = makeFuncCall(SystemFuncName("similar_to_escape"),
+					FuncCall *n = makeFuncCall(SystemFuncName("similar_escape"),
 											   list_make2($5, $7),
 											   @2);
 					$$ = (Node *) makeSimpleA_Expr(AEXPR_SIMILAR, "!~",
@@ -14441,9 +14323,9 @@ subquery_Op:
 			| NOT_LA ILIKE
 					{ $$ = list_make1(makeString("!~~*")); }
 /* cannot put SIMILAR TO here, because SIMILAR TO is a hack.
- * the regular expression is preprocessed by a function (similar_to_escape),
+ * the regular expression is preprocessed by a function (similar_escape),
  * and the ~ operator for posix regular expressions is used.
- *        x SIMILAR TO y     ->    x ~ similar_to_escape(y)
+ *        x SIMILAR TO y     ->    x ~ similar_escape(y)
  * this transformation is made on the fly by the parser upwards.
  * however the SubLink structure which handles any/some/all stuff
  * is not ready for such a thing.
@@ -15219,7 +15101,6 @@ unreserved_keyword:
 			| EXCLUSIVE
 			| EXECUTE
 			| EXPLAIN
-			| EXPRESSION
 			| EXTENSION
 			| EXTERNAL
 			| FAMILY
@@ -15401,7 +15282,6 @@ unreserved_keyword:
 			| TRUSTED
 			| TYPE_P
 			| TYPES_P
-			| UESCAPE
 			| UNBOUNDED
 			| UNCOMMITTED
 			| UNENCRYPTED
@@ -15699,7 +15579,7 @@ makeColumnRef(char *colname, List *indirection,
 		else if (IsA(lfirst(l), A_Star))
 		{
 			/* We only allow '*' at the end of a ColumnRef */
-			if (lnext(indirection, l) != NULL)
+			if (lnext(l) != NULL)
 				parser_yyerror("improper use of \"*\"");
 		}
 		nfields++;
@@ -15888,7 +15768,7 @@ check_indirection(List *indirection, core_yyscan_t yyscanner)
 	{
 		if (IsA(lfirst(l), A_Star))
 		{
-			if (lnext(indirection, l) != NULL)
+			if (lnext(l) != NULL)
 				parser_yyerror("improper use of \"*\"");
 		}
 	}
@@ -16301,15 +16181,20 @@ SplitColQualList(List *qualList,
 				 core_yyscan_t yyscanner)
 {
 	ListCell   *cell;
+	ListCell   *prev;
+	ListCell   *next;
 
 	*collClause = NULL;
-	foreach(cell, qualList)
+	prev = NULL;
+	for (cell = list_head(qualList); cell; cell = next)
 	{
 		Node   *n = (Node *) lfirst(cell);
 
+		next = lnext(cell);
 		if (IsA(n, Constraint))
 		{
 			/* keep it in list */
+			prev = cell;
 			continue;
 		}
 		if (IsA(n, CollateClause))
@@ -16326,7 +16211,7 @@ SplitColQualList(List *qualList,
 		else
 			elog(ERROR, "unexpected node type %d", (int) n->type);
 		/* remove non-Constraint nodes from qualList */
-		qualList = foreach_delete_current(qualList, cell);
+		qualList = list_delete_cell(qualList, cell, prev);
 	}
 	*constraintList = qualList;
 }

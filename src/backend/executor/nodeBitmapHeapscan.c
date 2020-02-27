@@ -16,7 +16,7 @@
  * required index qual conditions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -49,8 +49,9 @@
 #include "storage/predicate.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
-#include "utils/snapmgr.h"
 #include "utils/spccache.h"
+#include "utils/snapmgr.h"
+
 
 static TupleTableSlot *BitmapHeapNext(BitmapHeapScanState *node);
 static inline void BitmapDoneInitializingSharedState(ParallelBitmapHeapState *pstate);

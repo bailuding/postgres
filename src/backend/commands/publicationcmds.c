@@ -3,7 +3,7 @@
  * publicationcmds.c
  *		publication manipulation
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,25 +14,29 @@
 
 #include "postgres.h"
 
+#include "funcapi.h"
+#include "miscadmin.h"
+
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/table.h"
 #include "access/xact.h"
+
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
 #include "catalog/objectaddress.h"
 #include "catalog/pg_inherits.h"
+#include "catalog/pg_type.h"
 #include "catalog/pg_publication.h"
 #include "catalog/pg_publication_rel.h"
-#include "catalog/pg_type.h"
+
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
 #include "commands/publicationcmds.h"
-#include "funcapi.h"
-#include "miscadmin.h"
+
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
@@ -158,7 +162,7 @@ CreatePublication(CreatePublicationStmt *stmt)
 	if (stmt->for_all_tables && !superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to create FOR ALL TABLES publication")));
+				 (errmsg("must be superuser to create FOR ALL TABLES publication"))));
 
 	rel = table_open(PublicationRelationId, RowExclusiveLock);
 
@@ -227,14 +231,6 @@ CreatePublication(CreatePublicationStmt *stmt)
 	table_close(rel, RowExclusiveLock);
 
 	InvokeObjectPostCreateHook(PublicationRelationId, puboid, 0);
-
-	if (wal_level != WAL_LEVEL_LOGICAL)
-	{
-		ereport(WARNING,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("wal_level is insufficient to publish logical changes"),
-				 errhint("Set wal_level to logical before creating subscriptions.")));
-	}
 
 	return myself;
 }

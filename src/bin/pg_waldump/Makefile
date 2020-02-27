@@ -7,13 +7,8 @@ subdir = src/bin/pg_waldump
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
-OBJS = \
-	$(RMGRDESCOBJS) \
-	$(WIN32RES) \
-	compat.o \
-	pg_waldump.o \
-	rmgrdesc.o \
-	xlogreader.o
+OBJS = pg_waldump.o compat.o xlogreader.o rmgrdesc.o \
+	$(RMGRDESCOBJS) $(WIN32RES)
 
 override CPPFLAGS := -DFRONTEND $(CPPFLAGS)
 

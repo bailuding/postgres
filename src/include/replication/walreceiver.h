@@ -3,7 +3,7 @@
  * walreceiver.h
  *	  Exports from replication/walreceiverfuncs.c.
  *
- * Portions Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2019, PostgreSQL Global Development Group
  *
  * src/include/replication/walreceiver.h
  *
@@ -14,16 +14,16 @@
 
 #include "access/xlog.h"
 #include "access/xlogdefs.h"
+#include "fmgr.h"
 #include "getaddrinfo.h"		/* for NI_MAXHOST */
-#include "pgtime.h"
 #include "replication/logicalproto.h"
 #include "replication/walsender.h"
 #include "storage/latch.h"
 #include "storage/spin.h"
+#include "pgtime.h"
 #include "utils/tuplestore.h"
 
 /* user-settable parameters */
-extern bool wal_receiver_create_temp_slot;
 extern int	wal_receiver_status_interval;
 extern int	wal_receiver_timeout;
 extern bool hot_standby_feedback;
@@ -122,12 +122,6 @@ typedef struct
 	 */
 	char		slotname[NAMEDATALEN];
 
-	/*
-	 * If it's a temporary replication slot, it needs to be recreated when
-	 * connecting.
-	 */
-	bool		is_temp_slot;
-
 	/* set true once conninfo is ready to display (obfuscated pwds etc) */
 	bool		ready_to_display;
 
@@ -194,7 +188,7 @@ typedef enum
 } WalRcvExecStatus;
 
 /*
- * Return value for walrcv_exec, returns the status of the execution and
+ * Return value for walrcv_query, returns the status of the execution and
  * tuples if any.
  */
 typedef struct WalRcvExecResult
@@ -233,7 +227,6 @@ typedef char *(*walrcv_create_slot_fn) (WalReceiverConn *conn,
 										const char *slotname, bool temporary,
 										CRSSnapshotAction snapshot_action,
 										XLogRecPtr *lsn);
-typedef pid_t (*walrcv_get_backend_pid_fn) (WalReceiverConn *conn);
 typedef WalRcvExecResult *(*walrcv_exec_fn) (WalReceiverConn *conn,
 											 const char *query,
 											 const int nRetTypes,
@@ -254,7 +247,6 @@ typedef struct WalReceiverFunctionsType
 	walrcv_receive_fn walrcv_receive;
 	walrcv_send_fn walrcv_send;
 	walrcv_create_slot_fn walrcv_create_slot;
-	walrcv_get_backend_pid_fn walrcv_get_backend_pid;
 	walrcv_exec_fn walrcv_exec;
 	walrcv_disconnect_fn walrcv_disconnect;
 } WalReceiverFunctionsType;
@@ -285,8 +277,6 @@ extern PGDLLIMPORT WalReceiverFunctionsType *WalReceiverFunctions;
 	WalReceiverFunctions->walrcv_send(conn, buffer, nbytes)
 #define walrcv_create_slot(conn, slotname, temporary, snapshot_action, lsn) \
 	WalReceiverFunctions->walrcv_create_slot(conn, slotname, temporary, snapshot_action, lsn)
-#define walrcv_get_backend_pid(conn) \
-	WalReceiverFunctions->walrcv_get_backend_pid(conn)
 #define walrcv_exec(conn, exec, nRetTypes, retTypes) \
 	WalReceiverFunctions->walrcv_exec(conn, exec, nRetTypes, retTypes)
 #define walrcv_disconnect(conn) \

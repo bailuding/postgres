@@ -4,7 +4,7 @@
  *	  XML data type support.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/utils/adt/xml.c
@@ -559,7 +559,7 @@ xmlconcat(List *args)
 					   0,
 					   global_standalone);
 
-		appendBinaryStringInfo(&buf2, buf.data, buf.len);
+		appendStringInfoString(&buf2, buf.data);
 		buf = buf2;
 	}
 
@@ -1193,11 +1193,13 @@ xml_pstrdup_and_free(xmlChar *str)
 		{
 			result = pstrdup((char *) str);
 		}
-		PG_FINALLY();
+		PG_CATCH();
 		{
 			xmlFree(str);
+			PG_RE_THROW();
 		}
 		PG_END_TRY();
+		xmlFree(str);
 	}
 	else
 		result = NULL;
@@ -1877,8 +1879,7 @@ xml_errorHandler(void *data, xmlErrorPtr error)
 	if (xmlerrcxt->strictness == PG_XML_STRICTNESS_LEGACY)
 	{
 		appendStringInfoLineSeparator(&xmlerrcxt->err_buf);
-		appendBinaryStringInfo(&xmlerrcxt->err_buf, errorBuf->data,
-							   errorBuf->len);
+		appendStringInfoString(&xmlerrcxt->err_buf, errorBuf->data);
 
 		pfree(errorBuf->data);
 		pfree(errorBuf);
@@ -1896,8 +1897,7 @@ xml_errorHandler(void *data, xmlErrorPtr error)
 	if (level >= XML_ERR_ERROR)
 	{
 		appendStringInfoLineSeparator(&xmlerrcxt->err_buf);
-		appendBinaryStringInfo(&xmlerrcxt->err_buf, errorBuf->data,
-							   errorBuf->len);
+		appendStringInfoString(&xmlerrcxt->err_buf, errorBuf->data);
 
 		xmlerrcxt->err_occurred = true;
 	}
@@ -2461,12 +2461,8 @@ query_to_oid_list(const char *query)
 {
 	uint64		i;
 	List	   *list = NIL;
-	int			spi_result;
 
-	spi_result = SPI_execute(query, true, 0);
-	if (spi_result != SPI_OK_SELECT)
-		elog(ERROR, "SPI_execute returned %s for %s",
-			 SPI_result_code_string(spi_result), query);
+	SPI_execute(query, true, 0);
 
 	for (i = 0; i < SPI_processed; i++)
 	{
@@ -2878,7 +2874,7 @@ schema_to_xml_internal(Oid nspid, const char *xmlschema, bool nulls,
 		subres = table_to_xml_internal(relid, NULL, nulls, tableforest,
 									   targetns, false);
 
-		appendBinaryStringInfo(result, subres->data, subres->len);
+		appendStringInfoString(result, subres->data);
 		appendStringInfoChar(result, '\n');
 	}
 
@@ -3053,7 +3049,7 @@ database_to_xml_internal(const char *xmlschema, bool nulls,
 		subres = schema_to_xml_internal(nspid, NULL, nulls,
 										tableforest, targetns, false);
 
-		appendBinaryStringInfo(result, subres->data, subres->len);
+		appendStringInfoString(result, subres->data);
 		appendStringInfoChar(result, '\n');
 	}
 
@@ -3825,7 +3821,7 @@ SPI_sql_row_to_xmlelement(uint64 rownum, StringInfo result, char *tablename,
 static text *
 xml_xmlnodetoxmltype(xmlNodePtr cur, PgXmlErrorContext *xmlerrcxt)
 {
-	xmltype    *result = NULL;
+	xmltype    *result;
 
 	if (cur->type != XML_ATTRIBUTE_NODE && cur->type != XML_TEXT_NODE)
 	{
@@ -3868,14 +3864,19 @@ xml_xmlnodetoxmltype(xmlNodePtr cur, PgXmlErrorContext *xmlerrcxt)
 
 			result = xmlBuffer_to_xmltype(buf);
 		}
-		PG_FINALLY();
+		PG_CATCH();
 		{
 			if (nodefree)
 				nodefree(cur_copy);
 			if (buf)
 				xmlBufferFree(buf);
+			PG_RE_THROW();
 		}
 		PG_END_TRY();
+
+		if (nodefree)
+			nodefree(cur_copy);
+		xmlBufferFree(buf);
 	}
 	else
 	{
@@ -3890,11 +3891,13 @@ xml_xmlnodetoxmltype(xmlNodePtr cur, PgXmlErrorContext *xmlerrcxt)
 			result = (xmltype *) cstring_to_text(escaped);
 			pfree(escaped);
 		}
-		PG_FINALLY();
+		PG_CATCH();
 		{
 			xmlFree(str);
+			PG_RE_THROW();
 		}
 		PG_END_TRY();
+		xmlFree(str);
 	}
 
 	return result;
@@ -3982,7 +3985,7 @@ xml_xpathobjtoxmlarray(xmlXPathObjectPtr xpathobj,
 /*
  * Common code for xpath() and xmlexists()
  *
- * Evaluate XPath expression and return number of nodes in res_nitems
+ * Evaluate XPath expression and return number of nodes in res_items
  * and array of XML values in astate.  Either of those pointers can be
  * NULL if the corresponding result isn't wanted.
  *
@@ -4729,12 +4732,15 @@ XmlTableGetValue(TableFuncScanState *state, int colnum,
 									   state->typioparams[colnum],
 									   typmod);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		if (xpathobj != NULL)
 			xmlXPathFreeObject(xpathobj);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	xmlXPathFreeObject(xpathobj);
 
 	return result;
 #else

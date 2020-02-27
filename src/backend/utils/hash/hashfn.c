@@ -5,7 +5,7 @@
  *		hashtables
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,14 +16,16 @@
  *	  It is expected that every bit of a hash function's 32-bit result is
  *	  as random as every other; failure to ensure this is likely to lead
  *	  to poor performance of hash tables.  In most cases a hash
- *	  function should use hash_bytes() or its variant hash_bytes_uint32(),
- *	  or the wrappers hash_any() and hash_uint32 defined in hashfn.h.
+ *	  function should use hash_any() or its variant hash_uint32().
  *
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
 
+#include "fmgr.h"
+#include "nodes/bitmapset.h"
 #include "utils/hashutils.h"
+#include "utils/hsearch.h"
 
 
 /*
@@ -125,7 +127,7 @@
 }
 
 /*
- * hash_bytes() -- hash a variable-length key into a 32-bit value
+ * hash_any() -- hash a variable-length key into a 32-bit value
  *		k		: the key (the unaligned variable-length array of bytes)
  *		len		: the length of the key, counting by bytes
  *
@@ -142,10 +144,10 @@
  * by using the final values of both b and c.  b is perhaps a little less
  * well mixed than c, however.
  */
-uint32
-hash_bytes(const unsigned char *k, int keylen)
+Datum
+hash_any(register const unsigned char *k, register int keylen)
 {
-	uint32		a,
+	register uint32 a,
 				b,
 				c,
 				len;
@@ -158,7 +160,7 @@ hash_bytes(const unsigned char *k, int keylen)
 	if (((uintptr_t) k & UINT32_ALIGN_MASK) == 0)
 	{
 		/* Code path for aligned source data */
-		const uint32 *ka = (const uint32 *) k;
+		register const uint32 *ka = (const uint32 *) k;
 
 		/* handle most of the key */
 		while (len >= 12)
@@ -357,21 +359,22 @@ hash_bytes(const unsigned char *k, int keylen)
 	final(a, b, c);
 
 	/* report the result */
-	return c;
+	return UInt32GetDatum(c);
 }
 
 /*
- * hash_bytes_extended() -- hash into a 64-bit value, using an optional seed
+ * hash_any_extended() -- hash into a 64-bit value, using an optional seed
  *		k		: the key (the unaligned variable-length array of bytes)
  *		len		: the length of the key, counting by bytes
  *		seed	: a 64-bit seed (0 means no seed)
  *
- * Returns a uint64 value.  Otherwise similar to hash_bytes.
+ * Returns a uint64 value.  Otherwise similar to hash_any.
  */
-uint64
-hash_bytes_extended(const unsigned char *k, int keylen, uint64 seed)
+Datum
+hash_any_extended(register const unsigned char *k, register int keylen,
+				  uint64 seed)
 {
-	uint32		a,
+	register uint32 a,
 				b,
 				c,
 				len;
@@ -397,7 +400,7 @@ hash_bytes_extended(const unsigned char *k, int keylen, uint64 seed)
 	if (((uintptr_t) k & UINT32_ALIGN_MASK) == 0)
 	{
 		/* Code path for aligned source data */
-		const uint32 *ka = (const uint32 *) k;
+		register const uint32 *ka = (const uint32 *) k;
 
 		/* handle most of the key */
 		while (len >= 12)
@@ -596,20 +599,20 @@ hash_bytes_extended(const unsigned char *k, int keylen, uint64 seed)
 	final(a, b, c);
 
 	/* report the result */
-	return ((uint64) b << 32) | c;
+	PG_RETURN_UINT64(((uint64) b << 32) | c);
 }
 
 /*
- * hash_bytes_uint32() -- hash a 32-bit value to a 32-bit value
+ * hash_uint32() -- hash a 32-bit value to a 32-bit value
  *
  * This has the same result as
- *		hash_bytes(&k, sizeof(uint32))
+ *		hash_any(&k, sizeof(uint32))
  * but is faster and doesn't force the caller to store k into memory.
  */
-uint32
-hash_bytes_uint32(uint32 k)
+Datum
+hash_uint32(uint32 k)
 {
-	uint32		a,
+	register uint32 a,
 				b,
 				c;
 
@@ -619,18 +622,18 @@ hash_bytes_uint32(uint32 k)
 	final(a, b, c);
 
 	/* report the result */
-	return c;
+	return UInt32GetDatum(c);
 }
 
 /*
- * hash_bytes_uint32_extended() -- hash 32-bit value to 64-bit value, with seed
+ * hash_uint32_extended() -- hash a 32-bit value to a 64-bit value, with a seed
  *
- * Like hash_bytes_uint32, this is a convenience function.
+ * Like hash_uint32, this is a convenience function.
  */
-uint64
-hash_bytes_uint32_extended(uint32 k, uint64 seed)
+Datum
+hash_uint32_extended(uint32 k, uint64 seed)
 {
-	uint32		a,
+	register uint32 a,
 				b,
 				c;
 
@@ -648,7 +651,7 @@ hash_bytes_uint32_extended(uint32 k, uint64 seed)
 	final(a, b, c);
 
 	/* report the result */
-	return ((uint64) b << 32) | c;
+	PG_RETURN_UINT64(((uint64) b << 32) | c);
 }
 
 /*
@@ -667,7 +670,8 @@ string_hash(const void *key, Size keysize)
 	Size		s_len = strlen((const char *) key);
 
 	s_len = Min(s_len, keysize - 1);
-	return hash_bytes((const unsigned char *) key, (int) s_len);
+	return DatumGetUInt32(hash_any((const unsigned char *) key,
+								   (int) s_len));
 }
 
 /*
@@ -676,7 +680,8 @@ string_hash(const void *key, Size keysize)
 uint32
 tag_hash(const void *key, Size keysize)
 {
-	return hash_bytes((const unsigned char *) key, (int) keysize);
+	return DatumGetUInt32(hash_any((const unsigned char *) key,
+								   (int) keysize));
 }
 
 /*
@@ -688,5 +693,28 @@ uint32
 uint32_hash(const void *key, Size keysize)
 {
 	Assert(keysize == sizeof(uint32));
-	return hash_bytes_uint32(*((const uint32 *) key));
+	return DatumGetUInt32(hash_uint32(*((const uint32 *) key)));
+}
+
+/*
+ * bitmap_hash: hash function for keys that are (pointers to) Bitmapsets
+ *
+ * Note: don't forget to specify bitmap_match as the match function!
+ */
+uint32
+bitmap_hash(const void *key, Size keysize)
+{
+	Assert(keysize == sizeof(Bitmapset *));
+	return bms_hash_value(*((const Bitmapset *const *) key));
+}
+
+/*
+ * bitmap_match: match function to use with bitmap_hash
+ */
+int
+bitmap_match(const void *key1, const void *key2, Size keysize)
+{
+	Assert(keysize == sizeof(Bitmapset *));
+	return !bms_equal(*((const Bitmapset *const *) key1),
+					  *((const Bitmapset *const *) key2));
 }

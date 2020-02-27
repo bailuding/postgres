@@ -11,7 +11,7 @@
  * be handled easily in a simple depth-first traversal.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -92,7 +92,6 @@ _copyPlannedStmt(const PlannedStmt *from)
 	COPY_NODE_FIELD(rtable);
 	COPY_NODE_FIELD(resultRelations);
 	COPY_NODE_FIELD(rootResultRelations);
-	COPY_NODE_FIELD(appendRelations);
 	COPY_NODE_FIELD(subplans);
 	COPY_BITMAPSET_FIELD(rewindPlanIDs);
 	COPY_NODE_FIELD(rowMarks);
@@ -242,7 +241,6 @@ _copyAppend(const Append *from)
 	/*
 	 * copy remainder of node
 	 */
-	COPY_BITMAPSET_FIELD(apprelids);
 	COPY_NODE_FIELD(appendplans);
 	COPY_SCALAR_FIELD(first_partial_plan);
 	COPY_NODE_FIELD(part_prune_info);
@@ -266,7 +264,6 @@ _copyMergeAppend(const MergeAppend *from)
 	/*
 	 * copy remainder of node
 	 */
-	COPY_BITMAPSET_FIELD(apprelids);
 	COPY_NODE_FIELD(mergeplans);
 	COPY_SCALAR_FIELD(numCols);
 	COPY_POINTER_FIELD(sortColIdx, from->numCols * sizeof(AttrNumber));
@@ -1367,8 +1364,8 @@ _copyVar(const Var *from)
 	COPY_SCALAR_FIELD(vartypmod);
 	COPY_SCALAR_FIELD(varcollid);
 	COPY_SCALAR_FIELD(varlevelsup);
-	COPY_SCALAR_FIELD(varnosyn);
-	COPY_SCALAR_FIELD(varattnosyn);
+	COPY_SCALAR_FIELD(varnoold);
+	COPY_SCALAR_FIELD(varoattno);
 	COPY_LOCATION_FIELD(location);
 
 	return newnode;
@@ -2330,8 +2327,6 @@ _copyAppendRelInfo(const AppendRelInfo *from)
 	COPY_SCALAR_FIELD(parent_reltype);
 	COPY_SCALAR_FIELD(child_reltype);
 	COPY_NODE_FIELD(translated_vars);
-	COPY_SCALAR_FIELD(num_child_cols);
-	COPY_POINTER_FIELD(parent_colnos, from->num_child_cols * sizeof(AttrNumber));
 	COPY_SCALAR_FIELD(parent_reloid);
 
 	return newnode;
@@ -2373,10 +2368,7 @@ _copyRangeTblEntry(const RangeTblEntry *from)
 	COPY_NODE_FIELD(subquery);
 	COPY_SCALAR_FIELD(security_barrier);
 	COPY_SCALAR_FIELD(jointype);
-	COPY_SCALAR_FIELD(joinmergedcols);
 	COPY_NODE_FIELD(joinaliasvars);
-	COPY_NODE_FIELD(joinleftcols);
-	COPY_NODE_FIELD(joinrightcols);
 	COPY_NODE_FIELD(functions);
 	COPY_SCALAR_FIELD(funcordinality);
 	COPY_NODE_FIELD(tablefunc);
@@ -3505,18 +3497,6 @@ _copyCreateStatsStmt(const CreateStatsStmt *from)
 	return newnode;
 }
 
-static AlterStatsStmt *
-_copyAlterStatsStmt(const AlterStatsStmt *from)
-{
-	AlterStatsStmt *newnode = makeNode(AlterStatsStmt);
-
-	COPY_NODE_FIELD(defnames);
-	COPY_SCALAR_FIELD(stxstattarget);
-	COPY_SCALAR_FIELD(missing_ok);
-
-	return newnode;
-}
-
 static CreateFunctionStmt *
 _copyCreateFunctionStmt(const CreateFunctionStmt *from)
 {
@@ -3876,7 +3856,6 @@ _copyDropdbStmt(const DropdbStmt *from)
 
 	COPY_STRING_FIELD(dbname);
 	COPY_SCALAR_FIELD(missing_ok);
-	COPY_NODE_FIELD(options);
 
 	return newnode;
 }
@@ -4684,6 +4663,48 @@ _copyDropSubscriptionStmt(const DropSubscriptionStmt *from)
 }
 
 /* ****************************************************************
+ *					pg_list.h copy functions
+ * ****************************************************************
+ */
+
+/*
+ * Perform a deep copy of the specified list, using copyObject(). The
+ * list MUST be of type T_List; T_IntList and T_OidList nodes don't
+ * need deep copies, so they should be copied via list_copy()
+ */
+#define COPY_NODE_CELL(new, old)					\
+	(new) = (ListCell *) palloc(sizeof(ListCell));	\
+	lfirst(new) = copyObjectImpl(lfirst(old));
+
+static List *
+_copyList(const List *from)
+{
+	List	   *new;
+	ListCell   *curr_old;
+	ListCell   *prev_new;
+
+	Assert(list_length(from) >= 1);
+
+	new = makeNode(List);
+	new->length = from->length;
+
+	COPY_NODE_CELL(new->head, from->head);
+	prev_new = new->head;
+	curr_old = lnext(from->head);
+
+	while (curr_old)
+	{
+		COPY_NODE_CELL(prev_new->next, curr_old);
+		prev_new = prev_new->next;
+		curr_old = curr_old->next;
+	}
+	prev_new->next = NULL;
+	new->tail = prev_new;
+
+	return new;
+}
+
+/* ****************************************************************
  *					extensible.h copy functions
  * ****************************************************************
  */
@@ -5123,7 +5144,7 @@ copyObjectImpl(const void *from)
 			 * LIST NODES
 			 */
 		case T_List:
-			retval = list_copy_deep(from);
+			retval = _copyList(from);
 			break;
 
 			/*
@@ -5231,9 +5252,6 @@ copyObjectImpl(const void *from)
 			break;
 		case T_CreateStatsStmt:
 			retval = _copyCreateStatsStmt(from);
-			break;
-		case T_AlterStatsStmt:
-			retval = _copyAlterStatsStmt(from);
 			break;
 		case T_CreateFunctionStmt:
 			retval = _copyCreateFunctionStmt(from);

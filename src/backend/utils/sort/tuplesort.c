@@ -83,7 +83,7 @@
  * produce exactly one output run from their partial input.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -141,8 +141,7 @@ bool		optimize_bounded_sort = true;
  * which is a separate palloc chunk --- we assume it is just one chunk and
  * can be freed by a simple pfree() (except during merge, when we use a
  * simple slab allocator).  SortTuples also contain the tuple's first key
- * column in Datum/nullflag format, and a source/input tape number that
- * tracks which tape each heap element/slot belongs to during merging.
+ * column in Datum/nullflag format, and an index integer.
  *
  * Storing the first key column lets us save heap_getattr or index_getattr
  * calls during tuple comparisons.  We could extract and save all the key
@@ -163,13 +162,16 @@ bool		optimize_bounded_sort = true;
  * either the same pointer as "tuple", or is an abbreviated key value as
  * described above.  Accordingly, "tuple" is always used in preference to
  * datum1 as the authoritative value for pass-by-reference cases.
+ *
+ * tupindex holds the input tape number that each tuple in the heap was read
+ * from during merge passes.
  */
 typedef struct
 {
 	void	   *tuple;			/* the tuple itself */
 	Datum		datum1;			/* value of first key column */
 	bool		isnull1;		/* is first key column NULL? */
-	int			srctape;		/* source tape number */
+	int			tupindex;		/* see notes above */
 } SortTuple;
 
 /*
@@ -572,12 +574,10 @@ struct Sharedsort
  * a lot better than what we were doing before 7.3.  As of 9.6, a
  * separate memory context is used for caller passed tuples.  Resetting
  * it at certain key increments significantly ameliorates fragmentation.
- * Note that this places a responsibility on copytup routines to use the
- * correct memory context for these tuples (and to not use the reset
- * context for anything whose lifetime needs to span multiple external
- * sort runs).  readtup routines use the slab allocator (they cannot use
- * the reset context because it gets deleted at the point that merging
- * begins).
+ * Note that this places a responsibility on readtup and copytup routines
+ * to use the right memory context for these tuples (and to not use the
+ * reset context for anything whose lifetime needs to span multiple
+ * external sort runs).
  */
 
 /* When using this macro, beware of double evaluation of len */
@@ -1148,9 +1148,9 @@ tuplesort_begin_datum(Oid datumType, Oid sortOperator, Oid sortCollation,
 	 * Abbreviation is possible here only for by-reference types.  In theory,
 	 * a pass-by-value datatype could have an abbreviated form that is cheaper
 	 * to compare.  In a tuple sort, we could support that, because we can
-	 * always extract the original datum from the tuple as needed.  Here, we
+	 * always extract the original datum from the tuple is needed.  Here, we
 	 * can't, because a datum sort only stores a single copy of the datum; the
-	 * "tuple" field of each SortTuple is NULL.
+	 * "tuple" field of each sortTuple is NULL.
 	 */
 	state->sortKeys->abbreviate = !typbyval;
 
@@ -1186,21 +1186,20 @@ void
 tuplesort_set_bound(Tuplesortstate *state, int64 bound)
 {
 	/* Assert we're called before loading any tuples */
-	Assert(state->status == TSS_INITIAL && state->memtupcount == 0);
-	/* Can't set the bound twice, either */
+	Assert(state->status == TSS_INITIAL);
+	Assert(state->memtupcount == 0);
 	Assert(!state->bounded);
-	/* Also, this shouldn't be called in a parallel worker */
 	Assert(!WORKER(state));
-
-	/* Parallel leader allows but ignores hint */
-	if (LEADER(state))
-		return;
 
 #ifdef DEBUG_BOUNDED_SORT
 	/* Honor GUC setting that disables the feature (for easy testing) */
 	if (!optimize_bounded_sort)
 		return;
 #endif
+
+	/* Parallel leader ignores hint */
+	if (LEADER(state))
+		return;
 
 	/* We want to be able to compute bound * 2, so limit the setting */
 	if (bound > (int64) (INT_MAX / 2))
@@ -2092,7 +2091,7 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 			 */
 			if (state->memtupcount > 0)
 			{
-				int			srcTape = state->memtuples[0].srctape;
+				int			srcTape = state->memtuples[0].tupindex;
 				SortTuple	newtup;
 
 				*stup = state->memtuples[0];
@@ -2123,7 +2122,7 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 					LogicalTapeRewindForWrite(state->tapeset, srcTape);
 					return true;
 				}
-				newtup.srctape = srcTape;
+				newtup.tupindex = srcTape;
 				tuplesort_heap_replace_top(state, &newtup);
 				return true;
 			}
@@ -2807,7 +2806,7 @@ mergeonerun(Tuplesortstate *state)
 		SortTuple	stup;
 
 		/* write the tuple to destTape */
-		srcTape = state->memtuples[0].srctape;
+		srcTape = state->memtuples[0].tupindex;
 		WRITETUP(state, destTape, &state->memtuples[0]);
 
 		/* recycle the slot of the tuple we just wrote out, for the next read */
@@ -2820,8 +2819,9 @@ mergeonerun(Tuplesortstate *state)
 		 */
 		if (mergereadnext(state, srcTape, &stup))
 		{
-			stup.srctape = srcTape;
+			stup.tupindex = srcTape;
 			tuplesort_heap_replace_top(state, &stup);
+
 		}
 		else
 			tuplesort_heap_delete_top(state);
@@ -2885,7 +2885,7 @@ beginmerge(Tuplesortstate *state)
 
 		if (mergereadnext(state, srcTape, &tup))
 		{
-			tup.srctape = srcTape;
+			tup.tupindex = srcTape;
 			tuplesort_heap_insert(state, &tup);
 		}
 	}
@@ -4141,8 +4141,67 @@ comparetup_index_hash(const SortTuple *a, const SortTuple *b,
 static void
 copytup_index(Tuplesortstate *state, SortTuple *stup, void *tup)
 {
-	/* Not currently needed */
-	elog(ERROR, "copytup_index() should not be called");
+	IndexTuple	tuple = (IndexTuple) tup;
+	unsigned int tuplen = IndexTupleSize(tuple);
+	IndexTuple	newtuple;
+	Datum		original;
+
+	/* copy the tuple into sort storage */
+	newtuple = (IndexTuple) MemoryContextAlloc(state->tuplecontext, tuplen);
+	memcpy(newtuple, tuple, tuplen);
+	USEMEM(state, GetMemoryChunkSpace(newtuple));
+	stup->tuple = (void *) newtuple;
+	/* set up first-column key value */
+	original = index_getattr(newtuple,
+							 1,
+							 RelationGetDescr(state->indexRel),
+							 &stup->isnull1);
+
+	if (!state->sortKeys->abbrev_converter || stup->isnull1)
+	{
+		/*
+		 * Store ordinary Datum representation, or NULL value.  If there is a
+		 * converter it won't expect NULL values, and cost model is not
+		 * required to account for NULL, so in that case we avoid calling
+		 * converter and just set datum1 to zeroed representation (to be
+		 * consistent, and to support cheap inequality tests for NULL
+		 * abbreviated keys).
+		 */
+		stup->datum1 = original;
+	}
+	else if (!consider_abort_common(state))
+	{
+		/* Store abbreviated key representation */
+		stup->datum1 = state->sortKeys->abbrev_converter(original,
+														 state->sortKeys);
+	}
+	else
+	{
+		/* Abort abbreviation */
+		int			i;
+
+		stup->datum1 = original;
+
+		/*
+		 * Set state to be consistent with never trying abbreviation.
+		 *
+		 * Alter datum1 representation in already-copied tuples, so as to
+		 * ensure a consistent representation (current tuple was just
+		 * handled).  It does not matter if some dumped tuples are already
+		 * sorted on tape, since serialized tuples lack abbreviated keys
+		 * (TSS_BUILDRUNS state prevents control reaching here in any case).
+		 */
+		for (i = 0; i < state->memtupcount; i++)
+		{
+			SortTuple  *mtup = &state->memtuples[i];
+
+			tuple = (IndexTuple) mtup->tuple;
+			mtup->datum1 = index_getattr(tuple,
+										 1,
+										 RelationGetDescr(state->indexRel),
+										 &mtup->isnull1);
+		}
+	}
 }
 
 static void

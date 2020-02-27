@@ -3,7 +3,7 @@
  * tid.c
  *	  Functions for the built-in type tuple id
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -381,7 +381,7 @@ currtid_byreloid(PG_FUNCTION_ARGS)
 	ItemPointerCopy(tid, result);
 
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = table_beginscan_tid(rel, snapshot);
+	scan = table_beginscan(rel, snapshot, 0, NULL);
 	table_tuple_get_latest_tid(scan, result);
 	table_endscan(scan);
 	UnregisterSnapshot(snapshot);
@@ -419,7 +419,7 @@ currtid_byrelname(PG_FUNCTION_ARGS)
 	ItemPointerCopy(tid, result);
 
 	snapshot = RegisterSnapshot(GetLatestSnapshot());
-	scan = table_beginscan_tid(rel, snapshot);
+	scan = table_beginscan(rel, snapshot, 0, NULL);
 	table_tuple_get_latest_tid(scan, result);
 	table_endscan(scan);
 	UnregisterSnapshot(snapshot);

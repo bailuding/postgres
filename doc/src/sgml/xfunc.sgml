@@ -388,15 +388,11 @@ $$ LANGUAGE SQL;
     </para>
 
     <para>
-     If the final <literal>SELECT</literal> or <literal>RETURNING</literal>
-     clause in a <acronym>SQL</acronym> function does not return exactly
-     the function's declared result
-     type, <productname>PostgreSQL</productname> will automatically cast
-     the value to the required type, if that is possible with an implicit
-     or assignment cast.  Otherwise, you must write an explicit cast.
+     A <acronym>SQL</acronym> function must return exactly its declared
+     result type.  This may require inserting an explicit cast.
      For example, suppose we wanted the
      previous <function>add_em</function> function to return
-     type <type>float8</type> instead.  It's sufficient to write
+     type <type>float8</type> instead.  This won't work:
 
 <programlisting>
 CREATE FUNCTION add_em(integer, integer) RETURNS float8 AS $$
@@ -404,10 +400,16 @@ CREATE FUNCTION add_em(integer, integer) RETURNS float8 AS $$
 $$ LANGUAGE SQL;
 </programlisting>
 
-     since the <type>integer</type> sum can be implicitly cast
-     to <type>float8</type>.
-     (See <xref linkend="typeconv"/> or <xref linkend="sql-createcast"/>
-     for more about casts.)
+     even though in other contexts <productname>PostgreSQL</productname>
+     would be willing to insert an implicit cast to
+     convert <type>integer</type> to <type>float8</type>.
+     We need to write it as
+
+<programlisting>
+CREATE FUNCTION add_em(integer, integer) RETURNS float8 AS $$
+    SELECT ($1 + $2)::float8;
+$$ LANGUAGE SQL;
+</programlisting>
     </para>
    </sect2>
 
@@ -501,24 +503,23 @@ $$ LANGUAGE SQL;
       <listitem>
        <para>
         The select list order in the query must be exactly the same as
-        that in which the columns appear in the composite type.
-        (Naming the columns, as we did above,
+        that in which the columns appear in the table associated
+        with the composite type.  (Naming the columns, as we did above,
         is irrelevant to the system.)
        </para>
       </listitem>
       <listitem>
        <para>
-        We must ensure each expression's type can be cast to that of
-        the corresponding column of the composite type.
+        We must ensure each expression's type matches the corresponding
+        column of the composite type, inserting a cast if necessary.
         Otherwise we'll get errors like this:
 <screen>
 <computeroutput>
-ERROR:  return type mismatch in function declared to return emp
-DETAIL:  Final statement returns text instead of point at column 4.
+ERROR:  function declared to return emp returns varchar instead of text at column 1
 </computeroutput>
 </screen>
-        As with the base-type case, the system will not insert explicit
-        casts automatically, only implicit or assignment casts.
+        As with the base-type case, the function will not insert any casts
+        automatically.
        </para>
       </listitem>
      </itemizedlist>
@@ -541,7 +542,8 @@ $$ LANGUAGE SQL;
      Another example is that if we are trying to write a function that
      returns a domain over composite, rather than a plain composite type,
      it is always necessary to write it as returning a single column,
-     since there is no way to cause a coercion of the whole row result.
+     since there is no other way to produce a value that is exactly of
+     the domain type.
     </para>
 
     <para>
@@ -1261,7 +1263,7 @@ SELECT make_array(1, 2) AS intarray, make_array('a'::text, 'b') AS textarray;
      Without the typecast, you will get errors like this:
 <screen>
 <computeroutput>
-ERROR:  could not determine polymorphic type because input has type unknown
+ERROR:  could not determine polymorphic type because input has type "unknown"
 </computeroutput>
 </screen>
     </para>
@@ -3239,7 +3241,7 @@ CREATE FUNCTION make_array(anyelement) RETURNS anyarray
     </para>
    </sect2>
 
-   <sect2 id="xfunc-shared-addin">
+   <sect2>
     <title>Shared Memory and LWLocks</title>
 
     <para>

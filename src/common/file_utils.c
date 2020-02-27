@@ -5,7 +5,7 @@
  * Assorted utility functions to work on files.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/common/file_utils.c
@@ -51,6 +51,8 @@ static void walkdir(const char *path,
  * fsyncing, and might not have privileges to write at all.
  *
  * serverVersion indicates the version of the server to be fsync'd.
+ *
+ * Errors are reported but not considered fatal.
  */
 void
 fsync_pgdata(const char *pg_data,
@@ -248,8 +250,8 @@ pre_sync_fname(const char *fname, bool isdir)
  * fsync_fname -- Try to fsync a file or directory
  *
  * Ignores errors trying to open unreadable files, or trying to fsync
- * directories on systems where that isn't allowed/required.  All other errors
- * are fatal.
+ * directories on systems where that isn't allowed/required.  Reports
+ * other errors non-fatally.
  */
 int
 fsync_fname(const char *fname, bool isdir)
@@ -292,9 +294,9 @@ fsync_fname(const char *fname, bool isdir)
 	 */
 	if (returncode != 0 && !(isdir && (errno == EBADF || errno == EINVAL)))
 	{
-		pg_log_fatal("could not fsync file \"%s\": %m", fname);
+		pg_log_error("could not fsync file \"%s\": %m", fname);
 		(void) close(fd);
-		exit(EXIT_FAILURE);
+		return -1;
 	}
 
 	(void) close(fd);
@@ -362,9 +364,9 @@ durable_rename(const char *oldfile, const char *newfile)
 	{
 		if (fsync(fd) != 0)
 		{
-			pg_log_fatal("could not fsync file \"%s\": %m", newfile);
+			pg_log_error("could not fsync file \"%s\": %m", newfile);
 			close(fd);
-			exit(EXIT_FAILURE);
+			return -1;
 		}
 		close(fd);
 	}

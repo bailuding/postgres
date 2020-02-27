@@ -92,7 +92,7 @@
  * heap's TOAST table will go through the normal bufmgr.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  * IDENTIFICATION
@@ -105,25 +105,33 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "miscadmin.h"
+
 #include "access/heapam.h"
 #include "access/heapam_xlog.h"
-#include "access/heaptoast.h"
 #include "access/rewriteheap.h"
 #include "access/transam.h"
+#include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "access/xloginsert.h"
+
 #include "catalog/catalog.h"
+
 #include "lib/ilist.h"
-#include "miscadmin.h"
+
 #include "pgstat.h"
+
 #include "replication/logical.h"
 #include "replication/slot.h"
+
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
-#include "storage/procarray.h"
 #include "storage/smgr.h"
+
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
+#include "storage/procarray.h"
 
 /*
  * State associated with a rewrite operation. This is opaque to the user
@@ -229,7 +237,7 @@ static void logical_end_heap_rewrite(RewriteState state);
  * new_heap		new, locked heap relation to insert tuples to
  * oldest_xmin	xid used by the caller to determine which tuples are dead
  * freeze_xid	xid before which tuples will be frozen
- * cutoff_multi	multixact before which multis will be removed
+ * min_multi	multixact before which multis will be removed
  * use_wal		should the inserts to the new heap be WAL-logged?
  *
  * Returns an opaque RewriteState, allocated in current memory context,
@@ -656,8 +664,8 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 		 */
 		options |= HEAP_INSERT_NO_LOGICAL;
 
-		heaptup = heap_toast_insert_or_update(state->rs_new_rel, tup, NULL,
-											  options);
+		heaptup = toast_insert_or_update(state->rs_new_rel, tup, NULL,
+										 options);
 	}
 	else
 		heaptup = tup;
@@ -695,9 +703,10 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 							true);
 
 			/*
-			 * Now write the page. We say skipFsync = true because there's no
-			 * need for smgr to schedule an fsync for this write; we'll do it
-			 * ourselves in end_heap_rewrite.
+			 * Now write the page. We say isTemp = true even if it's not a
+			 * temp table, because there's no need for smgr to schedule an
+			 * fsync for this write; we'll do it ourselves in
+			 * end_heap_rewrite.
 			 */
 			RelationOpenSmgr(state->rs_new_rel);
 
@@ -778,7 +787,7 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
  * Instead we simply write the mapping files out to disk, *before* the
  * XLogInsert() is performed. That guarantees that either the XLogInsert() is
  * inserted after the checkpoint's redo pointer or that the checkpoint (via
- * CheckPointLogicalRewriteHeap()) has flushed the (partial) mapping file to
+ * LogicalRewriteHeapCheckpoint()) has flushed the (partial) mapping file to
  * disk. That leaves the tail end that has not yet been flushed open to
  * corruption, which is solved by including the current offset in the
  * xl_heap_rewrite_mapping records and truncating the mapping file to it
@@ -1156,6 +1165,13 @@ heap_xlog_logical_rewrite(XLogReaderState *r)
 						path, (uint32) xlrec->offset)));
 	pgstat_report_wait_end();
 
+	/* now seek to the position we want to write our data to */
+	if (lseek(fd, xlrec->offset, SEEK_SET) != xlrec->offset)
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not seek to end of file \"%s\": %m",
+						path)));
+
 	data = XLogRecGetData(r) + sizeof(*xlrec);
 
 	len = xlrec->num_mappings * sizeof(LogicalRewriteMappingData);
@@ -1163,7 +1179,7 @@ heap_xlog_logical_rewrite(XLogReaderState *r)
 	/* write out tail end of mapping file (again) */
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_LOGICAL_REWRITE_MAPPING_WRITE);
-	if (pg_pwrite(fd, data, len, xlrec->offset) != len)
+	if (write(fd, data, len) != len)
 	{
 		/* if write didn't set errno, assume problem is no disk space */
 		if (errno == 0)
@@ -1186,7 +1202,7 @@ heap_xlog_logical_rewrite(XLogReaderState *r)
 				 errmsg("could not fsync file \"%s\": %m", path)));
 	pgstat_report_wait_end();
 
-	if (CloseTransientFile(fd) != 0)
+	if (CloseTransientFile(fd))
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", path)));
@@ -1289,7 +1305,7 @@ CheckPointLogicalRewriteHeap(void)
 						 errmsg("could not fsync file \"%s\": %m", path)));
 			pgstat_report_wait_end();
 
-			if (CloseTransientFile(fd) != 0)
+			if (CloseTransientFile(fd))
 				ereport(ERROR,
 						(errcode_for_file_access(),
 						 errmsg("could not close file \"%s\": %m", path)));

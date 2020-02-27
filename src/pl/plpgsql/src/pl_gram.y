@@ -3,7 +3,7 @@
  *
  * pl_gram.y			- Parser for the PL/pgSQL procedural language
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -232,7 +232,7 @@ static	void			check_raise_parameters(PLpgSQL_stmt_raise *stmt);
  * Some of these are not directly referenced in this file, but they must be
  * here anyway.
  */
-%token <str>	IDENT UIDENT FCONST SCONST USCONST BCONST XCONST Op
+%token <str>	IDENT FCONST SCONST BCONST XCONST Op
 %token <ival>	ICONST PARAM
 %token			TYPECAST DOT_DOT COLON_EQUALS EQUALS_GREATER
 %token			LESS_EQUALS GREATER_EQUALS NOT_EQUALS
@@ -3695,7 +3695,7 @@ plpgsql_sql_error_callback(void *arg)
 			internalerrposition(myerrpos + errpos - cbarg->leaderlen - 1);
 	}
 
-	/* In any case, flush errposition --- we want internalerrposition only */
+	/* In any case, flush errposition --- we want internalerrpos only */
 	errposition(0);
 }
 

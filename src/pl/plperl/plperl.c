@@ -44,10 +44,11 @@
 #define TEXTDOMAIN PG_TEXTDOMAIN("plperl")
 
 /* perl stuff */
-/* string literal macros defining chunks of perl code */
-#include "perlchunks.h"
 #include "plperl.h"
 #include "plperl_helpers.h"
+
+/* string literal macros defining chunks of perl code */
+#include "perlchunks.h"
 /* defines PLPERL_SET_OPMASK */
 #include "plperl_opmask.h"
 
@@ -1631,8 +1632,11 @@ plperl_trigger_build_args(FunctionCallInfo fcinfo)
 	tdata = (TriggerData *) fcinfo->context;
 	tupdesc = tdata->tg_relation->rd_att;
 
-	relid = DatumGetCString(DirectFunctionCall1(oidout,
-												ObjectIdGetDatum(tdata->tg_relation->rd_id)));
+	relid = DatumGetCString(
+							DirectFunctionCall1(oidout,
+												ObjectIdGetDatum(tdata->tg_relation->rd_id)
+												)
+		);
 
 	hv_store_string(hv, "name", cstr2sv(tdata->tg_trigger->tgname));
 	hv_store_string(hv, "relid", cstr2sv(relid));
@@ -1836,7 +1840,7 @@ PG_FUNCTION_INFO_V1(plperl_call_handler);
 Datum
 plperl_call_handler(PG_FUNCTION_ARGS)
 {
-	Datum		retval = (Datum) 0;
+	Datum		retval;
 	plperl_call_data *volatile save_call_data = current_call_data;
 	plperl_interp_desc *volatile oldinterp = plperl_active_interp;
 	plperl_call_data this_call_data;
@@ -1858,15 +1862,20 @@ plperl_call_handler(PG_FUNCTION_ARGS)
 		else
 			retval = plperl_func_handler(fcinfo);
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		current_call_data = save_call_data;
 		activate_interpreter(oldinterp);
 		if (this_call_data.prodesc)
 			decrement_prodesc_refcount(this_call_data.prodesc);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
+	current_call_data = save_call_data;
+	activate_interpreter(oldinterp);
+	if (this_call_data.prodesc)
+		decrement_prodesc_refcount(this_call_data.prodesc);
 	return retval;
 }
 
@@ -1949,14 +1958,21 @@ plperl_inline_handler(PG_FUNCTION_ARGS)
 		if (SPI_finish() != SPI_OK_FINISH)
 			elog(ERROR, "SPI_finish() failed");
 	}
-	PG_FINALLY();
+	PG_CATCH();
 	{
 		if (desc.reference)
 			SvREFCNT_dec_current(desc.reference);
 		current_call_data = save_call_data;
 		activate_interpreter(oldinterp);
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	if (desc.reference)
+		SvREFCNT_dec_current(desc.reference);
+
+	current_call_data = save_call_data;
+	activate_interpreter(oldinterp);
 
 	error_context_stack = pl_error_context.previous;
 
@@ -2075,7 +2091,7 @@ plperlu_validator(PG_FUNCTION_ARGS)
 
 
 /*
- * Uses mkfunc to create a subroutine whose text is
+ * Uses mksafefunc/mkunsafefunc to create a subroutine whose text is
  * supplied in s, and returns a reference to it
  */
 static void
@@ -2144,6 +2160,8 @@ plperl_create_sub(plperl_proc_desc *prodesc, const char *s, Oid fn_oid)
 						prodesc->proname)));
 
 	prodesc->reference = subref;
+
+	return;
 }
 
 
@@ -2383,6 +2401,8 @@ plperl_call_perl_event_trigger_func(plperl_proc_desc *desc,
 	PUTBACK;
 	FREETMPS;
 	LEAVE;
+
+	return;
 }
 
 static Datum

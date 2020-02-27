@@ -3,7 +3,7 @@
  * execReplication.c
  *	  miscellaneous executor routines for logical replication
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -327,9 +327,6 @@ retry:
 			XactLockTableWait(xwait, NULL, NULL, XLTW_None);
 			goto retry;
 		}
-
-		/* Found our tuple and it's not locked */
-		break;
 	}
 
 	/* Found tuple, try to lock it in the lockmode. */
@@ -419,7 +416,7 @@ ExecSimpleRelationInsert(EState *estate, TupleTableSlot *slot)
 		/* Compute stored generated columns */
 		if (rel->rd_att->constr &&
 			rel->rd_att->constr->has_generated_stored)
-			ExecComputeStoredGenerated(estate, slot, CMD_INSERT);
+			ExecComputeStoredGenerated(estate, slot);
 
 		/* Check the constraints of the tuple */
 		if (rel->rd_att->constr)
@@ -485,7 +482,7 @@ ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
 		/* Compute stored generated columns */
 		if (rel->rd_att->constr &&
 			rel->rd_att->constr->has_generated_stored)
-			ExecComputeStoredGenerated(estate, slot, CMD_UPDATE);
+			ExecComputeStoredGenerated(estate, slot);
 
 		/* Check the constraints of the tuple */
 		if (rel->rd_att->constr)

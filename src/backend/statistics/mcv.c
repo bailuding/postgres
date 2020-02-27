@@ -4,7 +4,7 @@
  *	  POSTGRES multivariate MCV lists
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -26,7 +26,6 @@
 #include "optimizer/clauses.h"
 #include "statistics/extended_stats_internal.h"
 #include "statistics/statistics.h"
-#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
 #include "utils/fmgroids.h"
@@ -181,7 +180,7 @@ get_mincount_for_mcv_list(int samplerows, double totalrows)
  */
 MCVList *
 statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
-				  VacAttrStats **stats, double totalrows, int stattarget)
+				  VacAttrStats **stats, double totalrows)
 {
 	int			i,
 				numattrs,
@@ -210,12 +209,15 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	groups = build_distinct_groups(nitems, items, mss, &ngroups);
 
 	/*
-	 * Maximum number of MCV items to store, based on the statistics target
-	 * we computed for the statistics object (from target set for the object
-	 * itself, attributes and the system default). In any case, we can't keep
-	 * more groups than we have available.
+	 * Maximum number of MCV items to store, based on the attribute with the
+	 * largest stats target (and the number of groups we have available).
 	 */
-	nitems = stattarget;
+	nitems = stats[0]->attr->attstattarget;
+	for (i = 1; i < numattrs; i++)
+	{
+		if (stats[i]->attr->attstattarget > nitems)
+			nitems = stats[i]->attr->attstattarget;
+	}
 	if (nitems > ngroups)
 		nitems = ngroups;
 
@@ -476,7 +478,7 @@ sort_item_compare(const void *a, const void *b, void *arg)
  * build_column_frequencies
  *	compute frequencies of values in each column
  *
- * This returns an array of SortItems for each attribute the MCV is built
+ * This returns an array of SortItems for each attibute the MCV is built
  * on, with a frequency (number of occurrences) for each value. This is
  * then used to compute "base" frequency of MCV items.
  *

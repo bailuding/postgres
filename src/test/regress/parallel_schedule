@@ -78,12 +78,11 @@ test: brin gin gist spgist privileges init_privs security_label collate matview 
 # ----------
 # Another group of parallel tests
 # ----------
-test: create_table_like alter_generic alter_operator misc async dbsize misc_functions sysviews tsrf tidscan collate.icu.utf8
+test: create_table_like alter_generic alter_operator misc async dbsize misc_functions sysviews tsrf tidscan
 
 # rules cannot run concurrently with any test that creates
 # a view or rule in the public schema
-# collate.*.utf8 tests cannot be run in parallel with each other
-test: rules psql psql_crosstab amutils stats_ext collate.linux.utf8
+test: rules psql psql_crosstab amutils stats_ext
 
 # run by itself so it can run parallel workers
 test: select_parallel
@@ -112,7 +111,7 @@ test: plancache limit plpgsql copy2 temp domain rangefuncs prepare conversion tr
 # ----------
 # Another group of parallel tests
 # ----------
-test: partition_join partition_prune reloptions hash_part indexing partition_aggregate partition_info tuplesort explain
+test: partition_join partition_prune reloptions hash_part indexing partition_aggregate partition_info
 
 # event triggers cannot run concurrently with any test that runs DDL
 test: event_trigger

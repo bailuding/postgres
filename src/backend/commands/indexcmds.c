@@ -3,7 +3,7 @@
  * indexcmds.c
  *	  POSTGRES define and remove index code.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -438,7 +438,6 @@ DefineIndex(Oid relationId,
 			bool skip_build,
 			bool quiet)
 {
-	bool		concurrent;
 	char	   *indexRelationName;
 	char	   *accessMethodName;
 	Oid		   *typeObjectId;
@@ -487,18 +486,6 @@ DefineIndex(Oid relationId,
 	}
 
 	/*
-	 * Force non-concurrent build on temporary relations, even if CONCURRENTLY
-	 * was requested.  Other backends can't access a temporary relation, so
-	 * there's no harm in grabbing a stronger lock, and a non-concurrent DROP
-	 * is more efficient.  Do this before any use of the concurrent option is
-	 * done.
-	 */
-	if (stmt->concurrent && get_rel_persistence(relationId) != RELPERSISTENCE_TEMP)
-		concurrent = true;
-	else
-		concurrent = false;
-
-	/*
 	 * Start progress report.  If we're building a partition, this was already
 	 * done.
 	 */
@@ -507,7 +494,7 @@ DefineIndex(Oid relationId,
 		pgstat_progress_start_command(PROGRESS_COMMAND_CREATE_INDEX,
 									  relationId);
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_COMMAND,
-									 concurrent ?
+									 stmt->concurrent ?
 									 PROGRESS_CREATEIDX_COMMAND_CREATE_CONCURRENTLY :
 									 PROGRESS_CREATEIDX_COMMAND_CREATE);
 	}
@@ -531,8 +518,8 @@ DefineIndex(Oid relationId,
 	 * is part of the key columns, and anything equal to and over is part of
 	 * the INCLUDE columns.
 	 */
-	allIndexParams = list_concat_copy(stmt->indexParams,
-									  stmt->indexIncludingParams);
+	allIndexParams = list_concat(list_copy(stmt->indexParams),
+								 list_copy(stmt->indexIncludingParams));
 	numberOfAttributes = list_length(allIndexParams);
 
 	if (numberOfAttributes <= 0)
@@ -560,7 +547,7 @@ DefineIndex(Oid relationId,
 	 * parallel workers under the control of certain particular ambuild
 	 * functions will need to be updated, too.
 	 */
-	lockmode = concurrent ? ShareUpdateExclusiveLock : ShareLock;
+	lockmode = stmt->concurrent ? ShareUpdateExclusiveLock : ShareLock;
 	rel = table_open(relationId, lockmode);
 
 	namespaceId = RelationGetNamespace(rel);
@@ -603,12 +590,6 @@ DefineIndex(Oid relationId,
 	partitioned = rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE;
 	if (partitioned)
 	{
-		/*
-		 * Note: we check 'stmt->concurrent' rather than 'concurrent', so that
-		 * the error is thrown also for temporary tables.  Seems better to be
-		 * consistent, even though we could do it on temporary table because
-		 * we're not actually doing it concurrently.
-		 */
 		if (stmt->concurrent)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -800,8 +781,8 @@ DefineIndex(Oid relationId,
 							  NIL,	/* expressions, NIL for now */
 							  make_ands_implicit((Expr *) stmt->whereClause),
 							  stmt->unique,
-							  !concurrent,
-							  concurrent);
+							  !stmt->concurrent,
+							  stmt->concurrent);
 
 	typeObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
 	collationObjectId = (Oid *) palloc(numberOfAttributes * sizeof(Oid));
@@ -831,7 +812,7 @@ DefineIndex(Oid relationId,
 	 */
 	if (partitioned && (stmt->unique || stmt->primary))
 	{
-		PartitionKey key = RelationGetPartitionKey(rel);
+		PartitionKey key = rel->rd_partkey;
 		int			i;
 
 		/*
@@ -963,7 +944,7 @@ DefineIndex(Oid relationId,
 	 * A valid stmt->oldNode implies that we already have a built form of the
 	 * index.  The caller should also decline any index build.
 	 */
-	Assert(!OidIsValid(stmt->oldNode) || (skip_build && !concurrent));
+	Assert(!OidIsValid(stmt->oldNode) || (skip_build && !stmt->concurrent));
 
 	/*
 	 * Make the catalog entries for the index, including constraints. This
@@ -974,11 +955,11 @@ DefineIndex(Oid relationId,
 	flags = constr_flags = 0;
 	if (stmt->isconstraint)
 		flags |= INDEX_CREATE_ADD_CONSTRAINT;
-	if (skip_build || concurrent || partitioned)
+	if (skip_build || stmt->concurrent || partitioned)
 		flags |= INDEX_CREATE_SKIP_BUILD;
 	if (stmt->if_not_exists)
 		flags |= INDEX_CREATE_IF_NOT_EXISTS;
-	if (concurrent)
+	if (stmt->concurrent)
 		flags |= INDEX_CREATE_CONCURRENT;
 	if (partitioned)
 		flags |= INDEX_CREATE_PARTITIONED;
@@ -1079,8 +1060,9 @@ DefineIndex(Oid relationId,
 				Relation	childrel;
 				List	   *childidxs;
 				ListCell   *cell;
-				AttrMap    *attmap;
+				AttrNumber *attmap;
 				bool		found = false;
+				int			maplen;
 
 				childrel = table_open(childRelid, lockmode);
 
@@ -1105,8 +1087,10 @@ DefineIndex(Oid relationId,
 
 				childidxs = RelationGetIndexList(childrel);
 				attmap =
-					build_attrmap_by_name(RelationGetDescr(childrel),
-										  parentDesc);
+					convert_tuples_by_name_map(RelationGetDescr(childrel),
+											   parentDesc,
+											   gettext_noop("could not convert row type"));
+				maplen = parentDesc->natts;
 
 				foreach(cell, childidxs)
 				{
@@ -1125,7 +1109,7 @@ DefineIndex(Oid relationId,
 										 collationObjectId,
 										 cldidx->rd_opfamily,
 										 opfamOids,
-										 attmap))
+										 attmap, maplen))
 					{
 						Oid			cldConstrOid = InvalidOid;
 
@@ -1210,7 +1194,7 @@ DefineIndex(Oid relationId,
 						{
 							ielem->expr =
 								map_variable_attnos((Node *) ielem->expr,
-													1, 0, attmap,
+													1, 0, attmap, maplen,
 													InvalidOid,
 													&found_whole_row);
 							if (found_whole_row)
@@ -1219,7 +1203,7 @@ DefineIndex(Oid relationId,
 					}
 					childStmt->whereClause =
 						map_variable_attnos(stmt->whereClause, 1, 0,
-											attmap,
+											attmap, maplen,
 											InvalidOid, &found_whole_row);
 					if (found_whole_row)
 						elog(ERROR, "cannot convert whole-row table reference");
@@ -1234,7 +1218,7 @@ DefineIndex(Oid relationId,
 
 				pgstat_progress_update_param(PROGRESS_CREATEIDX_PARTITIONS_DONE,
 											 i + 1);
-				free_attrmap(attmap);
+				pfree(attmap);
 			}
 
 			/*
@@ -1272,7 +1256,7 @@ DefineIndex(Oid relationId,
 		return address;
 	}
 
-	if (!concurrent)
+	if (!stmt->concurrent)
 	{
 		/* Close the heap and we're done, in the non-concurrent case */
 		table_close(rel, NoLock);
@@ -1791,7 +1775,7 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 			indexInfo->ii_ExclusionOps[attn] = opid;
 			indexInfo->ii_ExclusionProcs[attn] = get_opcode(opid);
 			indexInfo->ii_ExclusionStrats[attn] = strat;
-			nextExclOp = lnext(exclusionOpNames, nextExclOp);
+			nextExclOp = lnext(nextExclOp);
 		}
 
 		/*
@@ -2342,11 +2326,6 @@ ReindexIndex(RangeVar *indexRelation, int options, bool concurrent)
 	 * Find and lock index, and check permissions on table; use callback to
 	 * obtain lock on table first, to avoid deadlock hazard.  The lock level
 	 * used here must match the index lock obtained in reindex_index().
-	 *
-	 * If it's a temporary index, we will perform a non-concurrent reindex,
-	 * even if CONCURRENTLY was requested.  In that case, reindex_index() will
-	 * upgrade the lock, but that's OK, because other sessions can't hold
-	 * locks on our temporary table.
 	 */
 	state.concurrent = concurrent;
 	state.locked_table_oid = InvalidOid;
@@ -2371,7 +2350,7 @@ ReindexIndex(RangeVar *indexRelation, int options, bool concurrent)
 	persistence = irel->rd_rel->relpersistence;
 	index_close(irel, NoLock);
 
-	if (concurrent && persistence != RELPERSISTENCE_TEMP)
+	if (concurrent)
 		ReindexRelationConcurrently(indOid, options);
 	else
 		reindex_index(indOid, false, persistence,
@@ -2458,20 +2437,13 @@ ReindexTable(RangeVar *relation, int options, bool concurrent)
 	Oid			heapOid;
 	bool		result;
 
-	/*
-	 * The lock level used here should match reindex_relation().
-	 *
-	 * If it's a temporary table, we will perform a non-concurrent reindex,
-	 * even if CONCURRENTLY was requested.  In that case, reindex_relation()
-	 * will upgrade the lock, but that's OK, because other sessions can't hold
-	 * locks on our temporary table.
-	 */
+	/* The lock level used here should match reindex_relation(). */
 	heapOid = RangeVarGetRelidExtended(relation,
 									   concurrent ? ShareUpdateExclusiveLock : ShareLock,
 									   0,
 									   RangeVarCallbackOwnsTable, NULL);
 
-	if (concurrent && get_rel_persistence(heapOid) != RELPERSISTENCE_TEMP)
+	if (concurrent)
 	{
 		result = ReindexRelationConcurrently(heapOid, options);
 
@@ -2677,7 +2649,7 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 		/* functions in indexes may want a snapshot set */
 		PushActiveSnapshot(GetTransactionSnapshot());
 
-		if (concurrent && get_rel_persistence(relid) != RELPERSISTENCE_TEMP)
+		if (concurrent)
 		{
 			(void) ReindexRelationConcurrently(relid, options);
 			/* ReindexRelationConcurrently() does the verbose output */
@@ -2725,12 +2697,6 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
  *
  * Returns true if any indexes have been rebuilt (including toast table's
  * indexes, when relevant), otherwise returns false.
- *
- * NOTE: This cannot be used on temporary relations.  A concurrent build would
- * cause issues with ON COMMIT actions triggered by the transactions of the
- * concurrent build.  Temporary relations are not subject to concurrent
- * concerns, so there's no need for the more complicated concurrent build,
- * anyway, and a non-concurrent reindex is more efficient.
  */
 static bool
 ReindexRelationConcurrently(Oid relationOid, int options)
@@ -2973,10 +2939,6 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 		indexRel = index_open(indexId, ShareUpdateExclusiveLock);
 		heapRel = table_open(indexRel->rd_index->indrelid,
 							 ShareUpdateExclusiveLock);
-
-		/* This function shouldn't be called for temporary relations. */
-		if (indexRel->rd_rel->relpersistence == RELPERSISTENCE_TEMP)
-			elog(ERROR, "cannot reindex a temporary table concurrently");
 
 		pgstat_progress_start_command(PROGRESS_COMMAND_CREATE_INDEX,
 									  RelationGetRelid(heapRel));

@@ -11,7 +11,7 @@
  * is that we have to work harder to clean up after ourselves when we modify
  * the query, since the derived data structures have to be updated too.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -96,16 +96,17 @@ restart:
 
 		/*
 		 * We can delete this SpecialJoinInfo from the list too, since it's no
-		 * longer of interest.  (Since we'll restart the foreach loop
-		 * immediately, we don't bother with foreach_delete_current.)
+		 * longer of interest.
 		 */
-		root->join_info_list = list_delete_cell(root->join_info_list, lc);
+		root->join_info_list = list_delete_ptr(root->join_info_list, sjinfo);
 
 		/*
 		 * Restart the scan.  This is necessary to ensure we find all
 		 * removable joins independently of ordering of the join_info_list
 		 * (note that removal of attr_needed bits may make a join appear
-		 * removable that did not before).
+		 * removable that did not before).  Also, since we just deleted the
+		 * current list cell, we'd have to have some kluge to continue the
+		 * list scan anyway.
 		 */
 		goto restart;
 	}
@@ -315,6 +316,7 @@ remove_rel_from_query(PlannerInfo *root, int relid, Relids joinrelids)
 	List	   *joininfos;
 	Index		rti;
 	ListCell   *l;
+	ListCell   *nextl;
 
 	/*
 	 * Mark the rel as "dead" to show it is no longer part of the join tree.
@@ -381,15 +383,16 @@ remove_rel_from_query(PlannerInfo *root, int relid, Relids joinrelids)
 	 * remove or just update the PHV.  There is no corresponding test in
 	 * join_is_removable because it doesn't need to distinguish those cases.
 	 */
-	foreach(l, root->placeholder_list)
+	for (l = list_head(root->placeholder_list); l != NULL; l = nextl)
 	{
 		PlaceHolderInfo *phinfo = (PlaceHolderInfo *) lfirst(l);
 
+		nextl = lnext(l);
 		Assert(!bms_is_member(relid, phinfo->ph_lateral));
 		if (bms_is_subset(phinfo->ph_needed, joinrelids) &&
 			bms_is_member(relid, phinfo->ph_eval_at))
-			root->placeholder_list = foreach_delete_current(root->placeholder_list,
-															l);
+			root->placeholder_list = list_delete_ptr(root->placeholder_list,
+													 phinfo);
 		else
 		{
 			phinfo->ph_eval_at = bms_del_member(phinfo->ph_eval_at, relid);
@@ -508,17 +511,21 @@ void
 reduce_unique_semijoins(PlannerInfo *root)
 {
 	ListCell   *lc;
+	ListCell   *next;
 
 	/*
-	 * Scan the join_info_list to find semijoins.
+	 * Scan the join_info_list to find semijoins.  We can't use foreach
+	 * because we may delete the current cell.
 	 */
-	foreach(lc, root->join_info_list)
+	for (lc = list_head(root->join_info_list); lc != NULL; lc = next)
 	{
 		SpecialJoinInfo *sjinfo = (SpecialJoinInfo *) lfirst(lc);
 		int			innerrelid;
 		RelOptInfo *innerrel;
 		Relids		joinrelids;
 		List	   *restrictlist;
+
+		next = lnext(lc);
 
 		/*
 		 * Must be a non-delaying semijoin to a single baserel, else we aren't
@@ -565,7 +572,7 @@ reduce_unique_semijoins(PlannerInfo *root)
 			continue;
 
 		/* OK, remove the SpecialJoinInfo from the list. */
-		root->join_info_list = foreach_delete_current(root->join_info_list, lc);
+		root->join_info_list = list_delete_ptr(root->join_info_list, sjinfo);
 	}
 }
 
@@ -890,7 +897,7 @@ query_is_distinct_for(Query *query, List *colnos, List *opids)
 				/* non-resjunk columns should have grouping clauses */
 				Assert(lg != NULL);
 				sgc = (SortGroupClause *) lfirst(lg);
-				lg = lnext(topop->groupClauses, lg);
+				lg = lnext(lg);
 
 				opid = distinct_col_search(tle->resno, colnos, opids);
 				if (!OidIsValid(opid) ||

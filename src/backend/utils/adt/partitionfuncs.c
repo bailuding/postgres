@@ -3,7 +3,7 @@
  * partitionfuncs.c
  *	  Functions for accessing partition-related metadata
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -67,13 +67,14 @@ pg_partition_tree(PG_FUNCTION_ARGS)
 #define PG_PARTITION_TREE_COLS	4
 	Oid			rootrelid = PG_GETARG_OID(0);
 	FuncCallContext *funcctx;
-	List	   *partitions;
+	ListCell  **next;
 
 	/* stuff done only on the first call of the function */
 	if (SRF_IS_FIRSTCALL())
 	{
 		MemoryContext oldcxt;
 		TupleDesc	tupdesc;
+		List	   *partitions;
 
 		/* create a function context for cross-call persistence */
 		funcctx = SRF_FIRSTCALL_INIT();
@@ -102,27 +103,29 @@ pg_partition_tree(PG_FUNCTION_ARGS)
 
 		funcctx->tuple_desc = BlessTupleDesc(tupdesc);
 
-		/* The only state we need is the partition list */
-		funcctx->user_fctx = (void *) partitions;
+		/* allocate memory for user context */
+		next = (ListCell **) palloc(sizeof(ListCell *));
+		*next = list_head(partitions);
+		funcctx->user_fctx = (void *) next;
 
 		MemoryContextSwitchTo(oldcxt);
 	}
 
 	/* stuff done on every call of the function */
 	funcctx = SRF_PERCALL_SETUP();
-	partitions = (List *) funcctx->user_fctx;
+	next = (ListCell **) funcctx->user_fctx;
 
-	if (funcctx->call_cntr < list_length(partitions))
+	if (*next != NULL)
 	{
 		Datum		result;
 		Datum		values[PG_PARTITION_TREE_COLS];
 		bool		nulls[PG_PARTITION_TREE_COLS];
 		HeapTuple	tuple;
 		Oid			parentid = InvalidOid;
-		Oid			relid = list_nth_oid(partitions, funcctx->call_cntr);
+		Oid			relid = lfirst_oid(*next);
 		char		relkind = get_rel_relkind(relid);
 		int			level = 0;
-		List	   *ancestors = get_partition_ancestors(relid);
+		List	   *ancestors = get_partition_ancestors(lfirst_oid(*next));
 		ListCell   *lc;
 
 		/*
@@ -157,6 +160,8 @@ pg_partition_tree(PG_FUNCTION_ARGS)
 			}
 		}
 		values[3] = Int32GetDatum(level);
+
+		*next = lnext(*next);
 
 		tuple = heap_form_tuple(funcctx->tuple_desc, values, nulls);
 		result = HeapTupleGetDatum(tuple);
@@ -216,11 +221,12 @@ pg_partition_ancestors(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
 	FuncCallContext *funcctx;
-	List	   *ancestors;
+	ListCell  **next;
 
 	if (SRF_IS_FIRSTCALL())
 	{
 		MemoryContext oldcxt;
+		List	   *ancestors;
 
 		funcctx = SRF_FIRSTCALL_INIT();
 
@@ -232,19 +238,21 @@ pg_partition_ancestors(PG_FUNCTION_ARGS)
 		ancestors = get_partition_ancestors(relid);
 		ancestors = lcons_oid(relid, ancestors);
 
-		/* The only state we need is the ancestors list */
-		funcctx->user_fctx = (void *) ancestors;
+		next = (ListCell **) palloc(sizeof(ListCell *));
+		*next = list_head(ancestors);
+		funcctx->user_fctx = (void *) next;
 
 		MemoryContextSwitchTo(oldcxt);
 	}
 
 	funcctx = SRF_PERCALL_SETUP();
-	ancestors = (List *) funcctx->user_fctx;
+	next = (ListCell **) funcctx->user_fctx;
 
-	if (funcctx->call_cntr < list_length(ancestors))
+	if (*next != NULL)
 	{
-		Oid			relid = list_nth_oid(ancestors, funcctx->call_cntr);
+		Oid			relid = lfirst_oid(*next);
 
+		*next = lnext(*next);
 		SRF_RETURN_NEXT(funcctx, ObjectIdGetDatum(relid));
 	}
 

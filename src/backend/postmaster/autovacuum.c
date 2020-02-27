@@ -50,7 +50,7 @@
  * there is a window (caused by pgstat delay) on which a worker may choose a
  * table that was already vacuumed; this is a bug in the current design.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -84,7 +84,6 @@
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/fork_process.h"
-#include "postmaster/interrupt.h"
 #include "postmaster/postmaster.h"
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
@@ -139,7 +138,9 @@ static bool am_autovacuum_launcher = false;
 static bool am_autovacuum_worker = false;
 
 /* Flags set by signal handlers */
+static volatile sig_atomic_t got_SIGHUP = false;
 static volatile sig_atomic_t got_SIGUSR2 = false;
+static volatile sig_atomic_t got_SIGTERM = false;
 
 /* Comparison points for determining whether freeze_max_age is exceeded */
 static TransactionId recentXid;
@@ -310,8 +311,6 @@ NON_EXEC_STATIC void AutoVacWorkerMain(int argc, char *argv[]) pg_attribute_nore
 NON_EXEC_STATIC void AutoVacLauncherMain(int argc, char *argv[]) pg_attribute_noreturn();
 
 static Oid	do_start_worker(void);
-static void HandleAutoVacLauncherInterrupts(void);
-static void AutoVacLauncherShutdown(void) pg_attribute_noreturn();
 static void launcher_determine_sleep(bool canlaunch, bool recursing,
 									 struct timeval *nap);
 static void launch_worker(TimestampTz now);
@@ -343,7 +342,9 @@ static void perform_work_item(AutoVacuumWorkItem *workitem);
 static void autovac_report_activity(autovac_table *tab);
 static void autovac_report_workitem(AutoVacuumWorkItem *workitem,
 									const char *nspname, const char *relname);
+static void av_sighup_handler(SIGNAL_ARGS);
 static void avl_sigusr2_handler(SIGNAL_ARGS);
+static void avl_sigterm_handler(SIGNAL_ARGS);
 static void autovac_refresh_stats(void);
 
 
@@ -449,9 +450,9 @@ AutoVacLauncherMain(int argc, char *argv[])
 	 * backend, so we use the same signal handling.  See equivalent code in
 	 * tcop/postgres.c.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	pqsignal(SIGHUP, av_sighup_handler);
 	pqsignal(SIGINT, StatementCancelHandler);
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+	pqsignal(SIGTERM, avl_sigterm_handler);
 
 	pqsignal(SIGQUIT, quickdie);
 	InitializeTimeouts();		/* establishes SIGALRM handler */
@@ -552,8 +553,8 @@ AutoVacLauncherMain(int argc, char *argv[])
 		RESUME_INTERRUPTS();
 
 		/* if in shutdown mode, no need for anything further; just go away */
-		if (ShutdownRequestPending)
-			AutoVacLauncherShutdown();
+		if (got_SIGTERM)
+			goto shutdown;
 
 		/*
 		 * Sleep at least 1 second after any error.  We don't want to be
@@ -604,7 +605,7 @@ AutoVacLauncherMain(int argc, char *argv[])
 	 */
 	if (!AutoVacuumingActive())
 	{
-		if (!ShutdownRequestPending)
+		if (!got_SIGTERM)
 			do_start_worker();
 		proc_exit(0);			/* done */
 	}
@@ -621,7 +622,7 @@ AutoVacLauncherMain(int argc, char *argv[])
 	rebuild_database_list(InvalidOid);
 
 	/* loop until shutdown request */
-	while (!ShutdownRequestPending)
+	while (!got_SIGTERM)
 	{
 		struct timeval nap;
 		TimestampTz current_time = 0;
@@ -648,7 +649,30 @@ AutoVacLauncherMain(int argc, char *argv[])
 
 		ResetLatch(MyLatch);
 
-		HandleAutoVacLauncherInterrupts();
+		/* Process sinval catchup interrupts that happened while sleeping */
+		ProcessCatchupInterrupt();
+
+		/* the normal shutdown case */
+		if (got_SIGTERM)
+			break;
+
+		if (got_SIGHUP)
+		{
+			got_SIGHUP = false;
+			ProcessConfigFile(PGC_SIGHUP);
+
+			/* shutdown requested in config file? */
+			if (!AutoVacuumingActive())
+				break;
+
+			/* rebalance in case the default cost parameters changed */
+			LWLockAcquire(AutovacuumLock, LW_EXCLUSIVE);
+			autovac_balance_cost();
+			LWLockRelease(AutovacuumLock);
+
+			/* rebuild the list in case the naptime changed */
+			rebuild_database_list(InvalidOid);
+		}
 
 		/*
 		 * a worker finished, or postmaster signalled failure to start a
@@ -789,51 +813,8 @@ AutoVacLauncherMain(int argc, char *argv[])
 		}
 	}
 
-	AutoVacLauncherShutdown();
-}
-
-/*
- * Process any new interrupts.
- */
-static void
-HandleAutoVacLauncherInterrupts(void)
-{
-	/* the normal shutdown case */
-	if (ShutdownRequestPending)
-		AutoVacLauncherShutdown();
-
-	if (ConfigReloadPending)
-	{
-		ConfigReloadPending = false;
-		ProcessConfigFile(PGC_SIGHUP);
-
-		/* shutdown requested in config file? */
-		if (!AutoVacuumingActive())
-			AutoVacLauncherShutdown();
-
-		/* rebalance in case the default cost parameters changed */
-		LWLockAcquire(AutovacuumLock, LW_EXCLUSIVE);
-		autovac_balance_cost();
-		LWLockRelease(AutovacuumLock);
-
-		/* rebuild the list in case the naptime changed */
-		rebuild_database_list(InvalidOid);
-	}
-
-	/* Process barrier events */
-	if (ProcSignalBarrierPending)
-		ProcessProcSignalBarrier();
-
-	/* Process sinval catchup interrupts that happened while sleeping */
-	ProcessCatchupInterrupt();
-}
-
-/*
- * Perform a normal exit from the autovac launcher.
- */
-static void
-AutoVacLauncherShutdown()
-{
+	/* Normal exit from the autovac launcher is here */
+shutdown:
 	ereport(DEBUG1,
 			(errmsg("autovacuum launcher shutting down")));
 	AutoVacuumShmem->av_launcherpid = 0;
@@ -1088,7 +1069,7 @@ rebuild_database_list(Oid newdb)
 		current_time = GetCurrentTimestamp();
 
 		/*
-		 * move the elements from the array into the dlist, setting the
+		 * move the elements from the array into the dllist, setting the
 		 * next_worker while walking the array
 		 */
 		for (i = 0; i < nelems; i++)
@@ -1406,6 +1387,18 @@ AutoVacWorkerFailed(void)
 	AutoVacuumShmem->av_signal[AutoVacForkFailed] = true;
 }
 
+/* SIGHUP: set flag to re-read config file at next convenient time */
+static void
+av_sighup_handler(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_SIGHUP = true;
+	SetLatch(MyLatch);
+
+	errno = save_errno;
+}
+
 /* SIGUSR2: a worker is up and running, or just finished, or failed to fork */
 static void
 avl_sigusr2_handler(SIGNAL_ARGS)
@@ -1413,6 +1406,18 @@ avl_sigusr2_handler(SIGNAL_ARGS)
 	int			save_errno = errno;
 
 	got_SIGUSR2 = true;
+	SetLatch(MyLatch);
+
+	errno = save_errno;
+}
+
+/* SIGTERM: time to die */
+static void
+avl_sigterm_handler(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_SIGTERM = true;
 	SetLatch(MyLatch);
 
 	errno = save_errno;
@@ -1516,7 +1521,7 @@ AutoVacWorkerMain(int argc, char *argv[])
 	 * backend, so we use the same signal handling.  See equivalent code in
 	 * tcop/postgres.c.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	pqsignal(SIGHUP, av_sighup_handler);
 
 	/*
 	 * SIGINT is used to signal canceling the current table's vacuum; SIGTERM
@@ -2309,9 +2314,9 @@ do_autovacuum(void)
 		/*
 		 * Check for config changes before processing each collected table.
 		 */
-		if (ConfigReloadPending)
+		if (got_SIGHUP)
 		{
-			ConfigReloadPending = false;
+			got_SIGHUP = false;
 			ProcessConfigFile(PGC_SIGHUP);
 
 			/*
@@ -2557,9 +2562,9 @@ deleted:
 		 * Check for config changes before acquiring lock for further jobs.
 		 */
 		CHECK_FOR_INTERRUPTS();
-		if (ConfigReloadPending)
+		if (got_SIGHUP)
 		{
-			ConfigReloadPending = false;
+			got_SIGHUP = false;
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 
@@ -2886,8 +2891,6 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 			(!wraparound ? VACOPT_SKIP_LOCKED : 0);
 		tab->at_params.index_cleanup = VACOPT_TERNARY_DEFAULT;
 		tab->at_params.truncate = VACOPT_TERNARY_DEFAULT;
-		/* As of now, we don't support parallel vacuum for autovacuum */
-		tab->at_params.nworkers = -1;
 		tab->at_params.freeze_min_age = freeze_min_age;
 		tab->at_params.freeze_table_age = freeze_table_age;
 		tab->at_params.multixact_freeze_min_age = multixact_freeze_min_age;

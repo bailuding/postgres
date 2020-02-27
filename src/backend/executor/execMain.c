@@ -26,7 +26,7 @@
  *	before ExecutorEnd.  This can be omitted only in case of EXPLAIN,
  *	which should also omit ExecutorRun.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1101,10 +1101,10 @@ CheckValidResultRel(ResultRelInfo *resultRelInfo, CmdType operation)
 
 			/*
 			 * Okay only if there's a suitable INSTEAD OF trigger.  Messages
-			 * here should match rewriteHandler.c's rewriteTargetView and
-			 * RewriteQuery, except that we omit errdetail because we haven't
-			 * got the information handy (and given that we really shouldn't
-			 * get here anyway, it's not worth great exertion to get).
+			 * here should match rewriteHandler.c's rewriteTargetView, except
+			 * that we omit errdetail because we haven't got the information
+			 * handy (and given that we really shouldn't get here anyway, it's
+			 * not worth great exertion to get).
 			 */
 			switch (operation)
 			{
@@ -1650,7 +1650,15 @@ ExecutePlan(EState *estate,
 		 * process so we just end the loop...
 		 */
 		if (TupIsNull(slot))
+		{
+			/*
+			 * If we know we won't need to back up, we can release resources
+			 * at this point.
+			 */
+			if (!(estate->es_top_eflags & EXEC_FLAG_BACKWARD))
+				(void) ExecShutdownNode(planstate);
 			break;
+		}
 
 		/*
 		 * If we have a junk filter, then project a new tuple with the junk
@@ -1693,15 +1701,16 @@ ExecutePlan(EState *estate,
 		 */
 		current_tuple_count++;
 		if (numberTuples && numberTuples == current_tuple_count)
+		{
+			/*
+			 * If we know we won't need to back up, we can release resources
+			 * at this point.
+			 */
+			if (!(estate->es_top_eflags & EXEC_FLAG_BACKWARD))
+				(void) ExecShutdownNode(planstate);
 			break;
+		}
 	}
-
-	/*
-	 * If we know we won't need to back up, we can release resources at this
-	 * point.
-	 */
-	if (!(estate->es_top_eflags & EXEC_FLAG_BACKWARD))
-		(void) ExecShutdownNode(planstate);
 
 	if (use_parallel_mode)
 		ExitParallelMode();
@@ -1843,14 +1852,15 @@ ExecPartitionCheckEmitError(ResultRelInfo *resultRelInfo,
 	if (resultRelInfo->ri_PartitionRoot)
 	{
 		TupleDesc	old_tupdesc;
-		AttrMap    *map;
+		AttrNumber *map;
 
 		root_relid = RelationGetRelid(resultRelInfo->ri_PartitionRoot);
 		tupdesc = RelationGetDescr(resultRelInfo->ri_PartitionRoot);
 
 		old_tupdesc = RelationGetDescr(resultRelInfo->ri_RelationDesc);
 		/* a reverse map */
-		map = build_attrmap_by_name_if_req(old_tupdesc, tupdesc);
+		map = convert_tuples_by_name_map_if_req(old_tupdesc, tupdesc,
+												gettext_noop("could not convert row type"));
 
 		/*
 		 * Partition-specific slot's tupdesc can't be changed, so allocate a
@@ -1929,13 +1939,14 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 				 */
 				if (resultRelInfo->ri_PartitionRoot)
 				{
-					AttrMap    *map;
+					AttrNumber *map;
 
 					rel = resultRelInfo->ri_PartitionRoot;
 					tupdesc = RelationGetDescr(rel);
 					/* a reverse map */
-					map = build_attrmap_by_name_if_req(orig_tupdesc,
-													   tupdesc);
+					map = convert_tuples_by_name_map_if_req(orig_tupdesc,
+															tupdesc,
+															gettext_noop("could not convert row type"));
 
 					/*
 					 * Partition-specific slot's tupdesc can't be changed, so
@@ -1957,9 +1968,8 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 
 				ereport(ERROR,
 						(errcode(ERRCODE_NOT_NULL_VIOLATION),
-						 errmsg("null value in column \"%s\" of relation \"%s\" violates not-null constraint",
-								NameStr(att->attname),
-								RelationGetRelationName(orig_rel)),
+						 errmsg("null value in column \"%s\" violates not-null constraint",
+								NameStr(att->attname)),
 						 val_desc ? errdetail("Failing row contains %s.", val_desc) : 0,
 						 errtablecol(orig_rel, attrChk)));
 			}
@@ -1979,13 +1989,14 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 			if (resultRelInfo->ri_PartitionRoot)
 			{
 				TupleDesc	old_tupdesc = RelationGetDescr(rel);
-				AttrMap    *map;
+				AttrNumber *map;
 
 				rel = resultRelInfo->ri_PartitionRoot;
 				tupdesc = RelationGetDescr(rel);
 				/* a reverse map */
-				map = build_attrmap_by_name_if_req(old_tupdesc,
-												   tupdesc);
+				map = convert_tuples_by_name_map_if_req(old_tupdesc,
+														tupdesc,
+														gettext_noop("could not convert row type"));
 
 				/*
 				 * Partition-specific slot's tupdesc can't be changed, so
@@ -2086,13 +2097,14 @@ ExecWithCheckOptions(WCOKind kind, ResultRelInfo *resultRelInfo,
 					if (resultRelInfo->ri_PartitionRoot)
 					{
 						TupleDesc	old_tupdesc = RelationGetDescr(rel);
-						AttrMap    *map;
+						AttrNumber *map;
 
 						rel = resultRelInfo->ri_PartitionRoot;
 						tupdesc = RelationGetDescr(rel);
 						/* a reverse map */
-						map = build_attrmap_by_name_if_req(old_tupdesc,
-														   tupdesc);
+						map = convert_tuples_by_name_map_if_req(old_tupdesc,
+																tupdesc,
+																gettext_noop("could not convert row type"));
 
 						/*
 						 * Partition-specific slot's tupdesc can't be changed,
@@ -2276,7 +2288,7 @@ ExecBuildSlotValueDescription(Oid reloid,
 			/* truncate if needed */
 			vallen = strlen(val);
 			if (vallen <= maxfieldlen)
-				appendBinaryStringInfo(&buf, val, vallen);
+				appendStringInfoString(&buf, val);
 			else
 			{
 				vallen = pg_mbcliplen(val, vallen, maxfieldlen);
@@ -2295,7 +2307,7 @@ ExecBuildSlotValueDescription(Oid reloid,
 	if (!table_perm)
 	{
 		appendStringInfoString(&collist, ") = ");
-		appendBinaryStringInfo(&collist, buf.data, buf.len);
+		appendStringInfoString(&collist, buf.data);
 
 		return collist.data;
 	}
@@ -2784,6 +2796,7 @@ EvalPlanQualStart(EPQState *epqstate, Plan *planTree)
 	rcestate->es_snapshot = parentestate->es_snapshot;
 	rcestate->es_crosscheck_snapshot = parentestate->es_crosscheck_snapshot;
 	rcestate->es_range_table = parentestate->es_range_table;
+	rcestate->es_range_table_array = parentestate->es_range_table_array;
 	rcestate->es_range_table_size = parentestate->es_range_table_size;
 	rcestate->es_relations = parentestate->es_relations;
 	rcestate->es_queryEnv = parentestate->es_queryEnv;
@@ -2888,24 +2901,38 @@ EvalPlanQualStart(EPQState *epqstate, Plan *planTree)
 	}
 
 	/*
+	 * These arrays are reused across different plans set with
+	 * EvalPlanQualSetPlan(), which is safe because they all use the same
+	 * parent EState. Therefore we can reuse if already allocated.
+	 */
+	if (epqstate->relsubs_rowmark == NULL)
+	{
+		Assert(epqstate->relsubs_done == NULL);
+		epqstate->relsubs_rowmark = (ExecAuxRowMark **)
+			palloc0(rtsize * sizeof(ExecAuxRowMark *));
+		epqstate->relsubs_done = (bool *)
+			palloc0(rtsize * sizeof(bool));
+	}
+	else
+	{
+		Assert(epqstate->relsubs_done != NULL);
+		memset(epqstate->relsubs_rowmark, 0,
+			   rtsize * sizeof(ExecAuxRowMark *));
+		memset(epqstate->relsubs_done, 0,
+			   rtsize * sizeof(bool));
+	}
+
+	/*
 	 * Build an RTI indexed array of rowmarks, so that
 	 * EvalPlanQualFetchRowMark() can efficiently access the to be fetched
 	 * rowmark.
 	 */
-	epqstate->relsubs_rowmark = (ExecAuxRowMark **)
-		palloc0(rtsize * sizeof(ExecAuxRowMark *));
 	foreach(l, epqstate->arowMarks)
 	{
 		ExecAuxRowMark *earm = (ExecAuxRowMark *) lfirst(l);
 
 		epqstate->relsubs_rowmark[earm->rowmark->rti - 1] = earm;
 	}
-
-	/*
-	 * Initialize per-relation EPQ tuple states to not-fetched.
-	 */
-	epqstate->relsubs_done = (bool *)
-		palloc0(rtsize * sizeof(bool));
 
 	/*
 	 * Initialize the private state information for all the nodes in the part
@@ -2975,9 +3002,7 @@ EvalPlanQualEnd(EPQState *epqstate)
 	FreeExecutorState(estate);
 
 	/* Mark EPQState idle */
-	epqstate->origslot = NULL;
 	epqstate->recheckestate = NULL;
 	epqstate->recheckplanstate = NULL;
-	epqstate->relsubs_rowmark = NULL;
-	epqstate->relsubs_done = NULL;
+	epqstate->origslot = NULL;
 }

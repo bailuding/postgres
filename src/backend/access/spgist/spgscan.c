@@ -4,7 +4,7 @@
  *	  routines for scanning SP-GiST indexes
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -146,6 +146,11 @@ resetSpGistScanOpaque(SpGistScanOpaque so)
 {
 	MemoryContext oldCtx;
 
+	/*
+	 * clear traversal context before proceeding to the next scan; this must
+	 * not happen before the freeScanStack above, else we get double-free
+	 * crashes.
+	 */
 	MemoryContextReset(so->traversalCxt);
 
 	oldCtx = MemoryContextSwitchTo(so->traversalCxt);
@@ -650,7 +655,8 @@ spgInnerTest(SpGistScanOpaque so, SpGistSearchItem *item,
 	{
 		/* collect node pointers */
 		SpGistNodeTuple node;
-		SpGistNodeTuple *nodes = (SpGistNodeTuple *) palloc(sizeof(SpGistNodeTuple) * nNodes);
+		SpGistNodeTuple *nodes = (SpGistNodeTuple *) palloc(
+															sizeof(SpGistNodeTuple) * nNodes);
 
 		SGITITERATE(innerTuple, i, node)
 		{
@@ -673,7 +679,7 @@ spgInnerTest(SpGistScanOpaque so, SpGistSearchItem *item,
 				continue;
 
 			/*
-			 * Use infinity distances if innerConsistentFn() failed to return
+			 * Use infinity distances if innerConsistent() failed to return
 			 * them or if is a NULL item (their distances are really unused).
 			 */
 			distances = out.distances ? out.distances[i] : so->infDistances;

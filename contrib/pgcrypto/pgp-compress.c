@@ -31,8 +31,9 @@
 
 #include "postgres.h"
 
-#include "pgp.h"
 #include "px.h"
+#include "pgp.h"
+
 
 /*
  * Compressed pkt writer
@@ -310,7 +311,7 @@ pgp_decompress_filter(PullFilter **res, PGP_Context *ctx, PullFilter *src)
 {
 	return pullf_create(res, &decompress_filter, ctx, src);
 }
-#else							/* !HAVE_LIBZ */
+#else							/* !HAVE_ZLIB */
 
 int
 pgp_compress_filter(PushFilter **res, PGP_Context *ctx, PushFilter *dst)

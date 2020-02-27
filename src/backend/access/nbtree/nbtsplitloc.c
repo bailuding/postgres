@@ -3,7 +3,7 @@
  * nbtsplitloc.c
  *	  Choose split point code for Postgres btree implementation.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -167,7 +167,7 @@ _bt_findsplitloc(Relation rel,
 
 	/* Count up total space in data items before actually scanning 'em */
 	olddataitemstotal = rightspace - (int) PageGetExactFreeSpace(page);
-	leaffillfactor = BTGetFillFactor(rel);
+	leaffillfactor = RelationGetFillFactor(rel, BTREE_DEFAULT_FILLFACTOR);
 
 	/* Passed-in newitemsz is MAXALIGNED but does not include line pointer */
 	newitemsz += sizeof(ItemIdData);
@@ -182,9 +182,6 @@ _bt_findsplitloc(Relation rel,
 	state.olddataitemstotal = olddataitemstotal;
 	state.minfirstrightsz = SIZE_MAX;
 	state.newitemoff = newitemoff;
-
-	/* newitem cannot be a posting list item */
-	Assert(!BTreeTupleIsPosting(newitem));
 
 	/*
 	 * maxsplits should never exceed maxoff because there will be at most as
@@ -462,7 +459,6 @@ _bt_recsplitloc(FindSplitData *state,
 	int16		leftfree,
 				rightfree;
 	Size		firstrightitemsz;
-	Size		postingsz = 0;
 	bool		newitemisfirstonright;
 
 	/* Is the new item going to be the first item on the right page? */
@@ -472,29 +468,7 @@ _bt_recsplitloc(FindSplitData *state,
 	if (newitemisfirstonright)
 		firstrightitemsz = state->newitemsz;
 	else
-	{
 		firstrightitemsz = firstoldonrightsz;
-
-		/*
-		 * Calculate suffix truncation space saving when firstright is a
-		 * posting list tuple, though only when the firstright is over 64
-		 * bytes including line pointer overhead (arbitrary).  This avoids
-		 * accessing the tuple in cases where its posting list must be very
-		 * small (if firstright has one at all).
-		 */
-		if (state->is_leaf && firstrightitemsz > 64)
-		{
-			ItemId		itemid;
-			IndexTuple	newhighkey;
-
-			itemid = PageGetItemId(state->page, firstoldonright);
-			newhighkey = (IndexTuple) PageGetItem(state->page, itemid);
-
-			if (BTreeTupleIsPosting(newhighkey))
-				postingsz = IndexTupleSize(newhighkey) -
-					BTreeTupleGetPostingOffset(newhighkey);
-		}
-	}
 
 	/* Account for all the old tuples */
 	leftfree = state->leftspace - olddataitemstoleft;
@@ -517,17 +491,11 @@ _bt_recsplitloc(FindSplitData *state,
 	 * If we are on the leaf level, assume that suffix truncation cannot avoid
 	 * adding a heap TID to the left half's new high key when splitting at the
 	 * leaf level.  In practice the new high key will often be smaller and
-	 * will rarely be larger, but conservatively assume the worst case.  We do
-	 * go to the trouble of subtracting away posting list overhead, though
-	 * only when it looks like it will make an appreciable difference.
-	 * (Posting lists are the only case where truncation will typically make
-	 * the final high key far smaller than firstright, so being a bit more
-	 * precise there noticeably improves the balance of free space.)
+	 * will rarely be larger, but conservatively assume the worst case.
 	 */
 	if (state->is_leaf)
 		leftfree -= (int16) (firstrightitemsz +
-							 MAXALIGN(sizeof(ItemPointerData)) -
-							 postingsz);
+							 MAXALIGN(sizeof(ItemPointerData)));
 	else
 		leftfree -= (int16) firstrightitemsz;
 
@@ -723,8 +691,7 @@ _bt_afternewitemoff(FindSplitData *state, OffsetNumber maxoff,
 	itemid = PageGetItemId(state->page, OffsetNumberPrev(state->newitemoff));
 	tup = (IndexTuple) PageGetItem(state->page, itemid);
 	/* Do cheaper test first */
-	if (BTreeTupleIsPosting(tup) ||
-		!_bt_adjacenthtid(&tup->t_tid, &state->newitem->t_tid))
+	if (!_bt_adjacenthtid(&tup->t_tid, &state->newitem->t_tid))
 		return false;
 	/* Check same conditions as rightmost item case, too */
 	keepnatts = _bt_keep_natts_fast(state->rel, tup, state->newitem);
@@ -847,7 +814,7 @@ _bt_bestsplitloc(FindSplitData *state, int perfectpenalty,
 		final->firstoldonright < state->newitemoff + MAX_LEAF_INTERVAL)
 	{
 		/*
-		 * Avoid the problem by performing a 50:50 split when the new item is
+		 * Avoid the problem by peforming a 50:50 split when the new item is
 		 * just to the right of the would-be "many duplicates" split point.
 		 */
 		final = &state->splits[0];
@@ -1093,7 +1060,7 @@ _bt_split_penalty(FindSplitData *state, SplitPoint *split)
 }
 
 /*
- * Subroutine to get a lastleft IndexTuple for a split point from page
+ * Subroutine to get a lastleft IndexTuple for a spit point from page
  */
 static inline IndexTuple
 _bt_split_lastleft(FindSplitData *state, SplitPoint *split)
@@ -1109,7 +1076,7 @@ _bt_split_lastleft(FindSplitData *state, SplitPoint *split)
 }
 
 /*
- * Subroutine to get a firstright IndexTuple for a split point from page
+ * Subroutine to get a firstright IndexTuple for a spit point from page
  */
 static inline IndexTuple
 _bt_split_firstright(FindSplitData *state, SplitPoint *split)

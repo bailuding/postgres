@@ -135,7 +135,7 @@
  *		- Protects both PredXact and SerializableXidHash.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -163,8 +163,8 @@
  *		PredicateLockRelation(Relation relation, Snapshot snapshot)
  *		PredicateLockPage(Relation relation, BlockNumber blkno,
  *						Snapshot snapshot)
- *		PredicateLockTID(Relation relation, ItemPointer tid, Snapshot snapshot,
- *						 TransactionId insert_xid)
+ *		PredicateLockTuple(Relation relation, HeapTuple tuple,
+ *						Snapshot snapshot)
  *		PredicateLockPageSplit(Relation relation, BlockNumber oldblkno,
  *							   BlockNumber newblkno)
  *		PredicateLockPageCombine(Relation relation, BlockNumber oldblkno,
@@ -173,10 +173,11 @@
  *		ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe)
  *
  * conflict detection (may also trigger rollback)
- *		CheckForSerializableConflictOut(Relation relation, TransactionId xid,
+ *		CheckForSerializableConflictOut(bool visible, Relation relation,
+ *										HeapTupleData *tup, Buffer buffer,
  *										Snapshot snapshot)
- *		CheckForSerializableConflictIn(Relation relation, ItemPointer tid,
- *									   BlockNumber blkno)
+ *		CheckForSerializableConflictIn(Relation relation, HeapTupleData *tup,
+ *									   Buffer buffer)
  *		CheckTableForSerializableConflictIn(Relation relation)
  *
  * final rollback checking
@@ -192,6 +193,8 @@
 
 #include "postgres.h"
 
+#include "access/heapam.h"
+#include "access/htup_details.h"
 #include "access/parallel.h"
 #include "access/slru.h"
 #include "access/subtrans.h"
@@ -361,7 +364,7 @@ static SERIALIZABLEXACT *OldCommittedSxact;
  * These configuration variables are used to set the predicate lock table size
  * and to control promotion of predicate locks to coarser granularity in an
  * attempt to degrade performance (mostly as false positive serialization
- * failure) gracefully in the face of memory pressure.
+ * failure) gracefully in the face of memory pressurel
  */
 int			max_predicate_locks_per_xact;	/* set by guc.c */
 int			max_predicate_locks_per_relation;	/* set by guc.c */
@@ -846,7 +849,7 @@ OldSerXidInit(void)
 /*
  * Record a committed read write serializable xid and the minimum
  * commitSeqNo of any transactions to which this xid had a rw-conflict out.
- * An invalid commitSeqNo means that there were no conflicts out from xid.
+ * An invalid seqNo means that there were no conflicts out from xid.
  */
 static void
 OldSerXidAdd(TransactionId xid, SerCommitSeqNo minConflictCommitSeqNo)
@@ -1682,7 +1685,7 @@ SetSerializableTransactionSnapshot(Snapshot snapshot,
 /*
  * Guts of GetSerializableTransactionSnapshot
  *
- * If sourcevxid is valid, this is actually an import operation and we should
+ * If sourcexid is valid, this is actually an import operation and we should
  * skip calling GetSnapshotData, because the snapshot contents are already
  * loaded up.  HOWEVER: to avoid race conditions, we must check that the
  * source xact is still running after we acquire SerializableXactHashLock.
@@ -2535,29 +2538,45 @@ PredicateLockPage(Relation relation, BlockNumber blkno, Snapshot snapshot)
 }
 
 /*
- *		PredicateLockTID
+ *		PredicateLockTuple
  *
  * Gets a predicate lock at the tuple level.
  * Skip if not in full serializable transaction isolation level.
  * Skip if this is a temporary table.
  */
 void
-PredicateLockTID(Relation relation, ItemPointer tid, Snapshot snapshot,
-				 TransactionId tuple_xid)
+PredicateLockTuple(Relation relation, HeapTuple tuple, Snapshot snapshot)
 {
 	PREDICATELOCKTARGETTAG tag;
+	ItemPointer tid;
+	TransactionId targetxmin;
 
 	if (!SerializationNeededForRead(relation, snapshot))
 		return;
 
 	/*
-	 * Return if this xact wrote it.
+	 * If it's a heap tuple, return if this xact wrote it.
 	 */
 	if (relation->rd_index == NULL)
 	{
-		/* If we wrote it; we already have a write lock. */
-		if (TransactionIdIsCurrentTransactionId(tuple_xid))
-			return;
+		TransactionId myxid;
+
+		targetxmin = HeapTupleHeaderGetXmin(tuple->t_data);
+
+		myxid = GetTopTransactionIdIfAny();
+		if (TransactionIdIsValid(myxid))
+		{
+			if (TransactionIdFollowsOrEquals(targetxmin, TransactionXmin))
+			{
+				TransactionId xid = SubTransGetTopmostTransaction(targetxmin);
+
+				if (TransactionIdEquals(xid, myxid))
+				{
+					/* We wrote it; we already have a write lock. */
+					return;
+				}
+			}
+		}
 	}
 
 	/*
@@ -2572,6 +2591,7 @@ PredicateLockTID(Relation relation, ItemPointer tid, Snapshot snapshot,
 	if (PredicateLockExists(&tag))
 		return;
 
+	tid = &(tuple->t_self);
 	SET_PREDICATELOCKTARGETTAG_TUPLE(tag,
 									 relation->rd_node.dbNode,
 									 relation->rd_id,
@@ -3385,8 +3405,8 @@ ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe)
 	 *
 	 * If this value is changing, we don't care that much whether we get the
 	 * old or new value -- it is just used to determine how far
-	 * SxactGlobalXmin must advance before this transaction can be fully
-	 * cleaned up.  The worst that could happen is we wait for one more
+	 * GlobalSerializableXmin must advance before this transaction can be
+	 * fully cleaned up.  The worst that could happen is we wait for one more
 	 * transaction to complete before freeing some RAM; correctness of visible
 	 * behavior is not affected.
 	 */
@@ -4016,41 +4036,33 @@ XidIsConcurrent(TransactionId xid)
 	return false;
 }
 
-bool
-CheckForSerializableConflictOutNeeded(Relation relation, Snapshot snapshot)
-{
-	if (!SerializationNeededForRead(relation, snapshot))
-		return false;
-
-	/* Check if someone else has already decided that we need to die */
-	if (SxactIsDoomed(MySerializableXact))
-	{
-		ereport(ERROR,
-				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-				 errmsg("could not serialize access due to read/write dependencies among transactions"),
-				 errdetail_internal("Reason code: Canceled on identification as a pivot, during conflict out checking."),
-				 errhint("The transaction might succeed if retried.")));
-	}
-
-	return true;
-}
-
 /*
  * CheckForSerializableConflictOut
- *		A table AM is reading a tuple that has been modified.  After determining
- *		that it is visible to us, it should call this function with the top
- *		level xid of the writing transaction.
+ *		We are reading a tuple which has been modified.  If it is visible to
+ *		us but has been deleted, that indicates a rw-conflict out.  If it's
+ *		not visible and was created by a concurrent (overlapping)
+ *		serializable transaction, that is also a rw-conflict out,
  *
- * This function will check for overlap with our own transaction.  If the
- * transactions overlap (i.e., they cannot see each other's writes), then we
- * have a conflict out.
+ * We will determine the top level xid of the writing transaction with which
+ * we may be in conflict, and check for overlap with our own transaction.
+ * If the transactions overlap (i.e., they cannot see each other's writes),
+ * then we have a conflict out.
+ *
+ * This function should be called just about anywhere in heapam.c where a
+ * tuple has been read. The caller must hold at least a shared lock on the
+ * buffer, because this function might set hint bits on the tuple. There is
+ * currently no known reason to call this function from an index AM.
  */
 void
-CheckForSerializableConflictOut(Relation relation, TransactionId xid, Snapshot snapshot)
+CheckForSerializableConflictOut(bool visible, Relation relation,
+								HeapTuple tuple, Buffer buffer,
+								Snapshot snapshot)
 {
+	TransactionId xid;
 	SERIALIZABLEXIDTAG sxidtag;
 	SERIALIZABLEXID *sxid;
 	SERIALIZABLEXACT *sxact;
+	HTSV_Result htsvResult;
 
 	if (!SerializationNeededForRead(relation, snapshot))
 		return;
@@ -4064,8 +4076,64 @@ CheckForSerializableConflictOut(Relation relation, TransactionId xid, Snapshot s
 				 errdetail_internal("Reason code: Canceled on identification as a pivot, during conflict out checking."),
 				 errhint("The transaction might succeed if retried.")));
 	}
-	Assert(TransactionIdIsValid(xid));
 
+	/*
+	 * Check to see whether the tuple has been written to by a concurrent
+	 * transaction, either to create it not visible to us, or to delete it
+	 * while it is visible to us.  The "visible" bool indicates whether the
+	 * tuple is visible to us, while HeapTupleSatisfiesVacuum checks what else
+	 * is going on with it.
+	 */
+	htsvResult = HeapTupleSatisfiesVacuum(tuple, TransactionXmin, buffer);
+	switch (htsvResult)
+	{
+		case HEAPTUPLE_LIVE:
+			if (visible)
+				return;
+			xid = HeapTupleHeaderGetXmin(tuple->t_data);
+			break;
+		case HEAPTUPLE_RECENTLY_DEAD:
+			if (!visible)
+				return;
+			xid = HeapTupleHeaderGetUpdateXid(tuple->t_data);
+			break;
+		case HEAPTUPLE_DELETE_IN_PROGRESS:
+			xid = HeapTupleHeaderGetUpdateXid(tuple->t_data);
+			break;
+		case HEAPTUPLE_INSERT_IN_PROGRESS:
+			xid = HeapTupleHeaderGetXmin(tuple->t_data);
+			break;
+		case HEAPTUPLE_DEAD:
+			return;
+		default:
+
+			/*
+			 * The only way to get to this default clause is if a new value is
+			 * added to the enum type without adding it to this switch
+			 * statement.  That's a bug, so elog.
+			 */
+			elog(ERROR, "unrecognized return value from HeapTupleSatisfiesVacuum: %u", htsvResult);
+
+			/*
+			 * In spite of having all enum values covered and calling elog on
+			 * this default, some compilers think this is a code path which
+			 * allows xid to be used below without initialization. Silence
+			 * that warning.
+			 */
+			xid = InvalidTransactionId;
+	}
+	Assert(TransactionIdIsValid(xid));
+	Assert(TransactionIdFollowsOrEquals(xid, TransactionXmin));
+
+	/*
+	 * Find top level xid.  Bail out if xid is too early to be a conflict, or
+	 * if it's our own xid.
+	 */
+	if (TransactionIdEquals(xid, GetTopTransactionIdIfAny()))
+		return;
+	xid = SubTransGetTopmostTransaction(xid);
+	if (TransactionIdPrecedes(xid, TransactionXmin))
+		return;
 	if (TransactionIdEquals(xid, GetTopTransactionIdIfAny()))
 		return;
 
@@ -4292,7 +4360,7 @@ CheckTargetForConflictsIn(PREDICATELOCKTARGETTAG *targettag)
 	/*
 	 * If we found one of our own SIREAD locks to remove, remove it now.
 	 *
-	 * At this point our transaction already has a RowExclusiveLock on the
+	 * At this point our transaction already has an ExclusiveRowLock on the
 	 * relation, so we are OK to drop the predicate lock on the tuple, if
 	 * found, without fearing that another write against the tuple will occur
 	 * before the MVCC information makes it to the buffer.
@@ -4371,7 +4439,8 @@ CheckTargetForConflictsIn(PREDICATELOCKTARGETTAG *targettag)
  * tuple itself.
  */
 void
-CheckForSerializableConflictIn(Relation relation, ItemPointer tid, BlockNumber blkno)
+CheckForSerializableConflictIn(Relation relation, HeapTuple tuple,
+							   Buffer buffer)
 {
 	PREDICATELOCKTARGETTAG targettag;
 
@@ -4401,22 +4470,22 @@ CheckForSerializableConflictIn(Relation relation, ItemPointer tid, BlockNumber b
 	 * It is not possible to take and hold a lock across the checks for all
 	 * granularities because each target could be in a separate partition.
 	 */
-	if (tid != NULL)
+	if (tuple != NULL)
 	{
 		SET_PREDICATELOCKTARGETTAG_TUPLE(targettag,
 										 relation->rd_node.dbNode,
 										 relation->rd_id,
-										 ItemPointerGetBlockNumber(tid),
-										 ItemPointerGetOffsetNumber(tid));
+										 ItemPointerGetBlockNumber(&(tuple->t_self)),
+										 ItemPointerGetOffsetNumber(&(tuple->t_self)));
 		CheckTargetForConflictsIn(&targettag);
 	}
 
-	if (blkno != InvalidBlockNumber)
+	if (BufferIsValid(buffer))
 	{
 		SET_PREDICATELOCKTARGETTAG_PAGE(targettag,
 										relation->rd_node.dbNode,
 										relation->rd_id,
-										blkno);
+										BufferGetBlockNumber(buffer));
 		CheckTargetForConflictsIn(&targettag);
 	}
 
@@ -4740,7 +4809,7 @@ OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
 }
 
 /*
- * PreCommit_CheckForSerializationFailure
+ * PreCommit_CheckForSerializableConflicts
  *		Check for dangerous structures in a serializable transaction
  *		at commit.
  *
@@ -4751,7 +4820,7 @@ OnConflict_CheckForSerializationFailure(const SERIALIZABLEXACT *reader,
  *
  * If a dangerous structure is found, the pivot (the near conflict) is
  * marked for death, because rolling back another transaction might mean
- * that we fail without ever making progress.  This transaction is
+ * that we flail without ever making progress.  This transaction is
  * committing writes, so letting it commit ensures progress.  If we
  * canceled the far conflict, it might immediately fail again on retry.
  */

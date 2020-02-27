@@ -5,7 +5,7 @@
  *	  Routines for CREATE and DROP FUNCTION commands and CREATE and DROP
  *	  CAST commands.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -34,8 +34,8 @@
 
 #include "access/genam.h"
 #include "access/htup_details.h"
-#include "access/sysattr.h"
 #include "access/table.h"
+#include "access/sysattr.h"
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
@@ -49,7 +49,6 @@
 #include "catalog/pg_type.h"
 #include "commands/alter.h"
 #include "commands/defrem.h"
-#include "commands/extension.h"
 #include "commands/proclang.h"
 #include "executor/execdesc.h"
 #include "executor/executor.h"
@@ -286,8 +285,8 @@ interpret_function_parameter_list(ParseState *pstate,
 			if (fp->mode == FUNC_PARAM_OUT)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("procedures cannot have OUT arguments"),
-						 errhint("INOUT arguments are permitted.")));
+						 (errmsg("procedures cannot have OUT arguments"),
+						  errhint("INOUT arguments are permitted."))));
 		}
 
 		/* handle input parameters */
@@ -992,7 +991,7 @@ CreateFunction(ParseState *pstate, CreateFunctionStmt *stmt)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("language \"%s\" does not exist", language),
-				 (extension_file_exists(language) ?
+				 (PLTemplateExists(language) ?
 				  errhint("Use CREATE EXTENSION to load the language into the database.") : 0)));
 
 	languageStruct = (Form_pg_language) GETSTRUCT(languageTuple);
@@ -2226,7 +2225,7 @@ ExecuteDoStmt(DoStmt *stmt, bool atomic)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("language \"%s\" does not exist", language),
-				 (extension_file_exists(language) ?
+				 (PLTemplateExists(language) ?
 				  errhint("Use CREATE EXTENSION to load the language into the database.") : 0)));
 
 	languageStruct = (Form_pg_language) GETSTRUCT(languageTuple);

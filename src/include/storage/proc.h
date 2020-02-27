@@ -4,7 +4,7 @@
  *	  per-process shared memory data structures
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/proc.h
@@ -293,9 +293,9 @@ extern PGPROC *PreparedXactProcs;
 
 /* configurable options */
 extern PGDLLIMPORT int DeadlockTimeout;
-extern PGDLLIMPORT int StatementTimeout;
-extern PGDLLIMPORT int LockTimeout;
-extern PGDLLIMPORT int IdleInTransactionSessionTimeout;
+extern int	StatementTimeout;
+extern int	LockTimeout;
+extern int	IdleInTransactionSessionTimeout;
 extern bool log_lock_waits;
 
 
@@ -332,4 +332,4 @@ extern PGPROC *AuxiliaryPidGetProc(int pid);
 extern void BecomeLockGroupLeader(void);
 extern bool BecomeLockGroupMember(PGPROC *leader, int pid);
 
-#endif							/* _PROC_H_ */
+#endif							/* PROC_H */

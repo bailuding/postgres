@@ -2,7 +2,7 @@
  * worker.c
  *	   PostgreSQL logical replication worker (apply)
  *
- * Copyright (c) 2016-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2019, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/worker.c
@@ -42,11 +42,9 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/optimizer.h"
-#include "parser/analyze.h"
 #include "parser/parse_relation.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
-#include "postmaster/interrupt.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/walwriter.h"
 #include "replication/decode.h"
@@ -112,6 +110,9 @@ static void send_feedback(XLogRecPtr recvpos, bool force, bool requestReply);
 static void store_flush_position(XLogRecPtr remote_lsn);
 
 static void maybe_reread_subscription(void);
+
+/* Flags set by signal handlers */
+static volatile sig_atomic_t got_SIGHUP = false;
 
 /*
  * Should this worker apply changes for given relation.
@@ -231,7 +232,6 @@ slot_fill_defaults(LogicalRepRelMapEntry *rel, EState *estate,
 	defmap = (int *) palloc(num_phys_attrs * sizeof(int));
 	defexprs = (ExprState **) palloc(num_phys_attrs * sizeof(ExprState *));
 
-	Assert(rel->attrmap->maplen == num_phys_attrs);
 	for (attnum = 0; attnum < num_phys_attrs; attnum++)
 	{
 		Expr	   *defexpr;
@@ -239,7 +239,7 @@ slot_fill_defaults(LogicalRepRelMapEntry *rel, EState *estate,
 		if (TupleDescAttr(desc, attnum)->attisdropped || TupleDescAttr(desc, attnum)->attgenerated)
 			continue;
 
-		if (rel->attrmap->attnums[attnum] >= 0)
+		if (rel->attrmap[attnum] >= 0)
 			continue;
 
 		defexpr = (Expr *) build_column_default(rel->localrel, attnum + 1);
@@ -321,11 +321,10 @@ slot_store_cstrings(TupleTableSlot *slot, LogicalRepRelMapEntry *rel,
 	error_context_stack = &errcallback;
 
 	/* Call the "in" function for each non-dropped attribute */
-	Assert(natts == rel->attrmap->maplen);
 	for (i = 0; i < natts; i++)
 	{
 		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, i);
-		int			remoteattnum = rel->attrmap->attnums[i];
+		int			remoteattnum = rel->attrmap[i];
 
 		if (!att->attisdropped && remoteattnum >= 0 &&
 			values[remoteattnum] != NULL)
@@ -364,19 +363,13 @@ slot_store_cstrings(TupleTableSlot *slot, LogicalRepRelMapEntry *rel,
 }
 
 /*
- * Replace selected columns with user data provided as C strings.
+ * Modify slot with user data provided as C strings.
  * This is somewhat similar to heap_modify_tuple but also calls the type
- * input functions on the user data.
- * "slot" is filled with a copy of the tuple in "srcslot", with
- * columns selected by the "replaces" array replaced with data values
- * from "values".
- * Caution: unreplaced pass-by-ref columns in "slot" will point into the
- * storage for "srcslot".  This is OK for current usage, but someday we may
- * need to materialize "slot" at the end to make it independent of "srcslot".
+ * input function on the user data as the input is the text representation
+ * of the types.
  */
 static void
-slot_modify_cstrings(TupleTableSlot *slot, TupleTableSlot *srcslot,
-					 LogicalRepRelMapEntry *rel,
+slot_modify_cstrings(TupleTableSlot *slot, LogicalRepRelMapEntry *rel,
 					 char **values, bool *replaces)
 {
 	int			natts = slot->tts_tupleDescriptor->natts;
@@ -384,19 +377,10 @@ slot_modify_cstrings(TupleTableSlot *slot, TupleTableSlot *srcslot,
 	SlotErrCallbackArg errarg;
 	ErrorContextCallback errcallback;
 
-	/* We'll fill "slot" with a virtual tuple, so we must start with ... */
+	slot_getallattrs(slot);
 	ExecClearTuple(slot);
 
-	/*
-	 * Copy all the column data from srcslot, so that we'll have valid values
-	 * for unreplaced columns.
-	 */
-	Assert(natts == srcslot->tts_tupleDescriptor->natts);
-	slot_getallattrs(srcslot);
-	memcpy(slot->tts_values, srcslot->tts_values, natts * sizeof(Datum));
-	memcpy(slot->tts_isnull, srcslot->tts_isnull, natts * sizeof(bool));
-
-	/* For error reporting, push callback + info on the error context stack */
+	/* Push callback + info on the error context stack */
 	errarg.rel = rel;
 	errarg.local_attnum = -1;
 	errarg.remote_attnum = -1;
@@ -406,11 +390,10 @@ slot_modify_cstrings(TupleTableSlot *slot, TupleTableSlot *srcslot,
 	error_context_stack = &errcallback;
 
 	/* Call the "in" function for each replaced attribute */
-	Assert(natts == rel->attrmap->maplen);
 	for (i = 0; i < natts; i++)
 	{
 		Form_pg_attribute att = TupleDescAttr(slot->tts_tupleDescriptor, i);
-		int			remoteattnum = rel->attrmap->attnums[i];
+		int			remoteattnum = rel->attrmap[i];
 
 		if (remoteattnum < 0)
 			continue;
@@ -445,7 +428,6 @@ slot_modify_cstrings(TupleTableSlot *slot, TupleTableSlot *srcslot,
 	/* Pop the error context stack */
 	error_context_stack = errcallback.previous;
 
-	/* And finally, declare that "slot" contains a valid virtual tuple */
 	ExecStoreVirtualTuple(slot);
 }
 
@@ -692,7 +674,6 @@ apply_handle_update(StringInfo s)
 	bool		has_oldtup;
 	TupleTableSlot *localslot;
 	TupleTableSlot *remoteslot;
-	RangeTblEntry *target_rte;
 	bool		found;
 	MemoryContext oldctx;
 
@@ -722,23 +703,6 @@ apply_handle_update(StringInfo s)
 	localslot = table_slot_create(rel->localrel,
 								  &estate->es_tupleTable);
 	EvalPlanQualInit(&epqstate, estate, NULL, NIL, -1);
-
-	/*
-	 * Populate updatedCols so that per-column triggers can fire.  This could
-	 * include more columns than were actually changed on the publisher
-	 * because the logical replication protocol doesn't contain that
-	 * information.  But it would for example exclude columns that only exist
-	 * on the subscriber, since we are not touching those.
-	 */
-	target_rte = list_nth(estate->es_range_table, 0);
-	for (int i = 0; i < remoteslot->tts_tupleDescriptor->natts; i++)
-	{
-		if (newtup.changed[i])
-			target_rte->updatedCols = bms_add_member(target_rte->updatedCols,
-													 i + 1 - FirstLowInvalidHeapAttributeNumber);
-	}
-
-	fill_extraUpdatedCols(target_rte, RelationGetDescr(rel->localrel));
 
 	PushActiveSnapshot(GetTransactionSnapshot());
 	ExecOpenIndices(estate->es_result_relation_info, false);
@@ -776,8 +740,8 @@ apply_handle_update(StringInfo s)
 	{
 		/* Process and store remote tuple in the slot */
 		oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-		slot_modify_cstrings(remoteslot, localslot, rel,
-							 newtup.values, newtup.changed);
+		ExecCopySlot(remoteslot, localslot);
+		slot_modify_cstrings(remoteslot, rel, newtup.values, newtup.changed);
 		MemoryContextSwitchTo(oldctx);
 
 		EvalPlanQualSetSlot(&epqstate, remoteslot);
@@ -1290,9 +1254,9 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 			CHECK_FOR_INTERRUPTS();
 		}
 
-		if (ConfigReloadPending)
+		if (got_SIGHUP)
 		{
-			ConfigReloadPending = false;
+			got_SIGHUP = false;
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 
@@ -1583,6 +1547,20 @@ subscription_change_cb(Datum arg, int cacheid, uint32 hashvalue)
 	MySubscriptionValid = false;
 }
 
+/* SIGHUP: set flag to reload configuration at next convenient time */
+static void
+logicalrep_worker_sighup(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_SIGHUP = true;
+
+	/* Waken anything waiting on the process latch */
+	SetLatch(MyLatch);
+
+	errno = save_errno;
+}
+
 /* Logical Replication Apply worker entry point */
 void
 ApplyWorkerMain(Datum main_arg)
@@ -1598,7 +1576,7 @@ ApplyWorkerMain(Datum main_arg)
 	logicalrep_worker_attach(worker_slot);
 
 	/* Setup signal handling */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	pqsignal(SIGHUP, logicalrep_worker_sighup);
 	pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 
@@ -1681,7 +1659,7 @@ ApplyWorkerMain(Datum main_arg)
 	{
 		char	   *syncslotname;
 
-		/* This is table synchronization worker, call initial sync. */
+		/* This is table synchroniation worker, call initial sync. */
 		syncslotname = LogicalRepSyncTableStart(&origin_startpos);
 
 		/* The slot name needs to be allocated in permanent memory context. */
