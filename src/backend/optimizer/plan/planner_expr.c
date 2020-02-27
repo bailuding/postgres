@@ -37,7 +37,6 @@
 #include "lib/knapsack.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
-#include "nodes/readfuncs.h"
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
 #endif
@@ -298,12 +297,6 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	 */
 	glob = makeNode(PlannerGlobal);
 
-	// Bailu: Load the forced join order from a file.
-	printf("[Bailu.DEBUG] About to load join order file");
-	glob->joinTreeNodeList = ReadJoinTreeNodeList("D:\\QOBenchmark\\pg_test_data\\join_tree.txt");
-
-	printf("[Bailu.DEBUG] Join order file loaded\n");
-
 	glob->boundParams = boundParams;
 	glob->subplans = NIL;
 	glob->subroots = NIL;
@@ -409,7 +402,6 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		tuple_fraction = 0.0;
 	}
 
-	
 	/* primary planning entry point (may recurse for subqueries) */
 	root = subquery_planner(glob, parse, NULL,
 							false, tuple_fraction);
@@ -419,16 +411,6 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	best_path = get_cheapest_fractional_path(final_rel, tuple_fraction);
 
 	top_plan = create_plan(root, best_path);
-
-
-	/* Bailu Ding: serialize the plan to a file. */
-	/*char * s = nodeToString(top_plan);
-	printf("======= Top Plan Initial ========\n");
-	printf("%s\n", s);
-	printf("=========End of Top Plan Initial ========\n");
-	FILE * fp = fopen("D:\\QOBenchmark\\output\\top_plan_init.txt", "w");
-	fprintf(fp, s);
-	fclose(fp);*/
 
 	/*
 	 * If creating a plan for a scrollable cursor, make sure it can run
@@ -577,8 +559,6 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 
 	if (glob->partition_directory != NULL)
 		DestroyPartitionDirectory(glob->partition_directory);
-
-	printf("[Bailu.DEBUG] About to exit planner\n");
 
 	return result;
 }
@@ -735,11 +715,6 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 					 */
 					rte->inh = has_subclass(rte->relid);
 				}
-				// Badin: DEBUG: print related information about the base table.
-				printf("[subquery_planner.DEBUG] RTE_RELATION: expanded reference name: %s, Alias: %s, relid %d\n",
-					rte->eref != NULL && rte->eref->aliasname != NULL ? rte->eref->aliasname : "null",
-					rte->alias != NULL && rte->alias->aliasname != NULL ? rte->alias->aliasname : "null",
-					rte->relid);
 				break;
 			case RTE_JOIN:
 				root->hasJoinRTEs = true;

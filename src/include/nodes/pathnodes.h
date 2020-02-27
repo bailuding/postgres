@@ -94,6 +94,17 @@ typedef enum InheritanceKind
 	INHKIND_PARTITIONED
 } InheritanceKind;
 
+/*
+* Bailu: Type to store the join order in plan forcing.
+*/
+struct JoinTreeNode
+{
+	int nodeId; // ID of this node.
+	char * relName; // Name of the relation.
+	char * alias; // Alias of the relation.
+	struct JoinTreeNode * parentNode; // Parent node.
+};
+
 /*----------
  * PlannerGlobal
  *		Global information for planning/optimization
@@ -146,6 +157,11 @@ typedef struct PlannerGlobal
 	char		maxParallelHazard;	/* worst PROPARALLEL hazard level */
 
 	PartitionDirectory partition_directory; /* partition descriptors */
+
+	struct List * joinTreeNodeList; /* forced plan join order */
+
+	struct List ** validJoinBitmapSets; /* valid subsets of base relations compatible with the forced join order indexed by their levels (0-based indexing) */
+	int * visitOrder; /* Number of join relations from left to right. Used in join order forcing */
 } PlannerGlobal;
 
 /* macro for fetching the Plan associated with a SubPlan node */

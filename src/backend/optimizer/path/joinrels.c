@@ -74,6 +74,7 @@ join_search_one_level(PlannerInfo *root, int level)
 	/* Set join_cur_level so that new joinrels are added to proper list */
 	root->join_cur_level = level;
 
+	bool forceJoinOrder = root->glob->joinTreeNodeList != NIL;
 	/*
 	 * First, consider left-sided and right-sided plans, in which rels of
 	 * exactly level-1 member relations are joined against initial relations.
@@ -85,7 +86,14 @@ join_search_one_level(PlannerInfo *root, int level)
 	{
 		RelOptInfo *old_rel = (RelOptInfo *) lfirst(r);
 
-		if (old_rel->joininfo != NIL || old_rel->has_eclass_joins ||
+		// Bailu: Allow cross products with join order forcing.
+		// The join restriction is probably still needed to ensure the correctness
+		// of the query semantics. This can be incorrect though given my
+		// limited understanding of the join restriction check.
+
+		//if (old_rel->joininfo != NIL || old_rel->has_eclass_joins ||
+		//	has_join_restriction(root, old_rel))
+		if ((!forceJoinOrder && (old_rel->joininfo != NIL || old_rel->has_eclass_joins)) ||
 			has_join_restriction(root, old_rel))
 		{
 			/*
@@ -159,13 +167,15 @@ join_search_one_level(PlannerInfo *root, int level)
 
 			/*
 			 * We can ignore relations without join clauses here, unless they
-			 * participate in join-order restrictions --- then we might have
-			 * to force a bushy join plan.
+			 * participate in join-order restrictions --- then we might have to force a bushy join plan.
 			 */
-			if (old_rel->joininfo == NIL && !old_rel->has_eclass_joins &&
+			/*if (old_rel->joininfo == NIL && !old_rel->has_eclass_joins &&
+				!has_join_restriction(root, old_rel))*/
+			// Bailu: Allow cross products with join order forcing.
+			if (!forceJoinOrder && old_rel->joininfo == NIL && !old_rel->has_eclass_joins &&
 				!has_join_restriction(root, old_rel))
-				continue;
-
+					continue;
+			
 			if (k == other_level)
 				other_rels = lnext(r);	/* only consider remaining rels */
 			else
@@ -186,6 +196,11 @@ join_search_one_level(PlannerInfo *root, int level)
 						have_join_order_restriction(root, old_rel, new_rel))
 					{
 						(void) make_join_rel(root, old_rel, new_rel);
+					}
+					// Bailu: Allow cross products with join order forcing.
+					else if (forceJoinOrder)
+					{
+						(void)make_join_rel(root, old_rel, new_rel);
 					}
 				}
 			}
@@ -244,11 +259,87 @@ join_search_one_level(PlannerInfo *root, int level)
 		 * check is useful.
 		 *----------
 		 */
+		// With join order forcing, there can also be the case that at specific level,
+		// there is no valid join. For example, ((A, B), (C, D)) has no valid 3-way
+		// join.
 		if (joinrels[level] == NIL &&
 			root->join_info_list == NIL &&
-			!root->hasLateralRTEs)
+			!root->hasLateralRTEs &&
+			!forceJoinOrder)
 			elog(ERROR, "failed to build any %d-way joins", level);
 	}
+}
+
+/*
+* Return the max value for the members in the bitmap set.
+*/
+int
+get_max_value(int * values, int size, Relids * relids)
+{
+	int max_value = 0;
+	for (int i = 0; i < size; ++i) {
+		if (bms_is_member(i, relids)) {
+			max_value = max(values[i], max_value);
+		}
+	}
+	return max_value;
+}
+
+/*
+* Check if the nodes on the left side are on the left side in the force join order.
+*/
+static bool
+is_valid_left_right_order(PlannerInfo * root, Relids * leftrelids, Relids * rightrelids)
+{
+	// If a join order is forced, validate all the relations populated in this level
+	// and remove ones that is not compatable with the given join order.
+	printf("[is_valid_left_right_order] Check left %s, right %s\n",
+		bmsToString(leftrelids), bmsToString(rightrelids));
+	if (root->glob->joinTreeNodeList != NIL)
+	{
+		int left_max = get_max_value(root->glob->visitOrder, root->simple_rel_array_size, leftrelids);
+		int right_max = get_max_value(root->glob->visitOrder, root->simple_rel_array_size, rightrelids);
+		printf("[joinrels.298] visit order, left max %d, right max %d\n", left_max, right_max);
+		if (left_max < right_max) {
+			printf("[is_valid_left_right_order] left right order is valid: left %s, right %s\n",
+				bmsToString(leftrelids), bmsToString(rightrelids));
+			return true;
+		}
+	}
+	return false;
+}
+
+/*
+* Check if the forced join order has a node with the same set of relations.
+*/
+static bool
+is_valid_join_set(PlannerInfo * root, Relids * joinrelids, int level)
+{
+	// If a join order is forced, validate all the relations populated in this level
+	// and remove ones that is not compatable with the given join order.
+	printf("[is_valid_join_order] Check join order %s at level %d\n",
+		bmsToString(joinrelids), level);
+	if (root->glob->joinTreeNodeList != NIL)
+	{
+		List * setsOfBitmaps = root->glob->validJoinBitmapSets[level];
+		ListCell * lc;
+		printf("[joinrels] number of bitmaps in this level: %d\n",
+			list_length(setsOfBitmaps));
+		foreach(lc, setsOfBitmaps)
+		{
+			Bitmapset * bitmap = (Bitmapset *)lfirst(lc);
+			//printf("[is_valid_order] Check join order %s with valid order %s\n",
+				//bmsToString(joinrelids), bmsToString(bitmap));
+			// rels->relids can be a subset of a valid join order
+			// because the valid join order can be fuzzy
+			// with only relation table name matched.
+			if (bms_equal(joinrelids, bitmap)
+				|| bms_is_subset(joinrelids, bitmap)) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 /*
@@ -694,6 +785,15 @@ make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2)
 		rel2 = trel;
 	}
 
+	// Bailu: Force join order.
+	if (root->glob->joinTreeNodeList != NIL
+		&& !is_valid_join_set(root, joinrelids, bms_num_members(joinrelids))) {
+		printf("[make_join_rel] Invalid join order: left %s, right %s, join %s\n",
+			bmsToString(rel1->relids), bmsToString(rel2->relids), bmsToString(joinrelids));
+		bms_free(joinrelids);
+		return NULL;
+	}
+
 	/*
 	 * If it's a plain inner join, then we won't have found anything in
 	 * join_info_list.  Make up a SpecialJoinInfo so that selectivity
@@ -773,6 +873,11 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 	 * We need only consider the jointypes that appear in join_info_list, plus
 	 * JOIN_INNER.
 	 */
+	
+	// Join order forcing:
+	bool is_left_right_valid = is_valid_left_right_order(root, rel1->relids, rel2->relids);
+	bool is_right_left_valid = is_valid_left_right_order(root, rel2->relids, rel1->relids);
+
 	switch (sjinfo->jointype)
 	{
 		case JOIN_INNER:
@@ -782,12 +887,21 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 				mark_dummy_rel(joinrel);
 				break;
 			}
-			add_paths_to_joinrel(root, joinrel, rel1, rel2,
-								 JOIN_INNER, sjinfo,
-								 restrictlist);
-			add_paths_to_joinrel(root, joinrel, rel2, rel1,
-								 JOIN_INNER, sjinfo,
-								 restrictlist);
+			/*
+			* Check if the left right order is valid for the plan forcing.
+			*/
+			if (is_left_right_valid)
+			{
+				add_paths_to_joinrel(root, joinrel, rel1, rel2,
+					JOIN_INNER, sjinfo,
+					restrictlist);
+			}
+			if (is_right_left_valid)
+			{
+				add_paths_to_joinrel(root, joinrel, rel2, rel1,
+					JOIN_INNER, sjinfo,
+					restrictlist);
+			}
 			break;
 		case JOIN_LEFT:
 			if (is_dummy_rel(rel1) ||
@@ -799,12 +913,21 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 			if (restriction_is_constant_false(restrictlist, joinrel, false) &&
 				bms_is_subset(rel2->relids, sjinfo->syn_righthand))
 				mark_dummy_rel(rel2);
-			add_paths_to_joinrel(root, joinrel, rel1, rel2,
-								 JOIN_LEFT, sjinfo,
-								 restrictlist);
-			add_paths_to_joinrel(root, joinrel, rel2, rel1,
-								 JOIN_RIGHT, sjinfo,
-								 restrictlist);
+			/*
+			* Check if the left right order is valid for the plan forcing.
+			*/
+			if (is_left_right_valid)
+			{
+				add_paths_to_joinrel(root, joinrel, rel1, rel2,
+					JOIN_LEFT, sjinfo,
+					restrictlist);
+			}
+			if (is_right_left_valid)
+			{
+				add_paths_to_joinrel(root, joinrel, rel2, rel1,
+					JOIN_RIGHT, sjinfo,
+					restrictlist);
+			}
 			break;
 		case JOIN_FULL:
 			if ((is_dummy_rel(rel1) && is_dummy_rel(rel2)) ||
@@ -813,13 +936,18 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 				mark_dummy_rel(joinrel);
 				break;
 			}
-			add_paths_to_joinrel(root, joinrel, rel1, rel2,
-								 JOIN_FULL, sjinfo,
-								 restrictlist);
-			add_paths_to_joinrel(root, joinrel, rel2, rel1,
-								 JOIN_FULL, sjinfo,
-								 restrictlist);
-
+			if (is_left_right_valid)
+			{
+				add_paths_to_joinrel(root, joinrel, rel1, rel2,
+					JOIN_FULL, sjinfo,
+					restrictlist);
+			}
+			if (is_right_left_valid)
+			{
+				add_paths_to_joinrel(root, joinrel, rel2, rel1,
+					JOIN_FULL, sjinfo,
+					restrictlist);
+			}
 			/*
 			 * If there are join quals that aren't mergeable or hashable, we
 			 * may not be able to build any valid plan.  Complain here so that
@@ -849,9 +977,12 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 					mark_dummy_rel(joinrel);
 					break;
 				}
-				add_paths_to_joinrel(root, joinrel, rel1, rel2,
-									 JOIN_SEMI, sjinfo,
-									 restrictlist);
+				if (is_left_right_valid)
+				{
+					add_paths_to_joinrel(root, joinrel, rel1, rel2,
+						JOIN_SEMI, sjinfo,
+						restrictlist);
+				}
 			}
 
 			/*
@@ -872,12 +1003,18 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 					mark_dummy_rel(joinrel);
 					break;
 				}
-				add_paths_to_joinrel(root, joinrel, rel1, rel2,
-									 JOIN_UNIQUE_INNER, sjinfo,
-									 restrictlist);
-				add_paths_to_joinrel(root, joinrel, rel2, rel1,
-									 JOIN_UNIQUE_OUTER, sjinfo,
-									 restrictlist);
+				if (is_left_right_valid)
+				{
+					add_paths_to_joinrel(root, joinrel, rel1, rel2,
+						JOIN_UNIQUE_INNER, sjinfo,
+						restrictlist);
+				}
+				if (is_right_left_valid)
+				{
+					add_paths_to_joinrel(root, joinrel, rel2, rel1,
+						JOIN_UNIQUE_OUTER, sjinfo,
+						restrictlist);
+				}
 			}
 			break;
 		case JOIN_ANTI:
@@ -890,9 +1027,12 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 			if (restriction_is_constant_false(restrictlist, joinrel, false) &&
 				bms_is_subset(rel2->relids, sjinfo->syn_righthand))
 				mark_dummy_rel(rel2);
-			add_paths_to_joinrel(root, joinrel, rel1, rel2,
-								 JOIN_ANTI, sjinfo,
-								 restrictlist);
+			if (is_left_right_valid)
+			{
+				add_paths_to_joinrel(root, joinrel, rel1, rel2,
+					JOIN_ANTI, sjinfo,
+					restrictlist);
+			}
 			break;
 		default:
 			/* other values not expected here */
@@ -901,6 +1041,9 @@ populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
 	}
 
 	/* Apply partitionwise join technique, if possible. */
+	// Join order forcing:
+	// This will call populate_join_rel_with_paths again, so no  need
+	// to check the validality of left and right join orders.
 	try_partitionwise_join(root, rel1, rel2, joinrel, sjinfo, restrictlist);
 }
 

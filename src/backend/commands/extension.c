@@ -746,6 +746,8 @@ execute_sql_string(const char *sql)
 										sql,
 										GetActiveSnapshot(), NULL,
 										dest, NULL, NULL, 0);
+				
+				printf("[DEBUG] About to execute the query\n");
 
 				ExecutorStart(qdesc, 0);
 				ExecutorRun(qdesc, ForwardScanDirection, 0, true);

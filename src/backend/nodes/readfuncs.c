@@ -191,6 +191,90 @@
 
 
 /*
+* Bailu: Parse join tree from a file.
+* The format of the join file is as the following:
+* N (number of rows)
+* Parent ID [relation name] [alias]
+* Each row is a node in the join tree, and the ID of
+* the relation is the row count - 1, i.e., ID is 0-index based.
+* If the node is an internal node, it will not have a relation name nor the alias.
+* The alias is optional for a base relation.
+*/
+List *
+ReadJoinTreeNodeList(char * filepath)
+{
+	printf("[Bailu.DEBUG] Load join order from file %s\n", filepath);
+	List * joinTreeNodeList = NIL;
+	FILE * file = fopen(filepath, "r");
+	// If the file does not exist, return NIL.
+	if (NULL == file) {
+		printf("[Bailu.DEBUG] Cannot open file %s\n", file);
+		return NIL;
+	}
+	printf("[Bailu.DEBUG] Parse forced join order from file %s\n", filepath);
+	int n;
+	fscanf(file, "%d", &n);
+	char buffer[1024];
+	int parentId;
+	ListCell * lc;
+	for (int i = 0; i < n; ++i) {
+		struct JoinTreeNode * node = (struct JoinTreeNode *)palloc0(sizeof(struct JoinTreeNode));
+		node->nodeId = i;
+		node->parentNode = NULL;
+		fscanf(file, "%d", &parentId);
+		// Find the parent node.
+		if (parentId != -1)
+		{
+			foreach(lc, joinTreeNodeList) {
+				struct JoinTreeNode * parent = (struct JoinTreeNode *)lfirst(lc);
+				if (parent->nodeId == parentId) {
+					node->parentNode = parent;
+					break;
+				}
+			}
+			// This shouldn't happen.
+			if (node->parentNode == NULL) {
+				printf("[Bailu.ERROR] Cannot find the parent node for node %d\n", node->nodeId);
+			}
+		}
+		fscanf(file, " [%s ", &buffer);
+		// Ignore the last character because it is a ']'
+		int len = strlen(buffer);
+		if (len > 1) {
+			node->relName = (char *)palloc0(len * sizeof(char));
+			strncpy(node->relName, buffer, len - 1);
+		}
+		else
+		{
+			node->relName = NULL;
+		}
+		fscanf(file, " [%s ", &buffer);
+		len = strlen(buffer);
+		if (len > 1) {
+			node->alias = (char *)palloc0(len * sizeof(char));
+			strncpy(node->alias, buffer, len - 1);
+		}
+		else
+		{
+			node->alias = NULL;
+		}
+		// Add the node to the list of nodes.
+		joinTreeNodeList = lappend(joinTreeNodeList, node);
+	}
+	// Print the parsed relation information.
+	printf("[Bailu.DEBUG] Join tree loaded\n");
+	foreach(lc, joinTreeNodeList) {
+		struct JoinTreeNode * node = (struct JoinTreeNode *)lfirst(lc);
+		printf("NodeId %d, ParentId %d, relation_name [%s], alias [%s]\n",
+			node->nodeId, node->parentNode == NULL ? -1 : node->parentNode->nodeId, node->relName == NULL ? "null" : node->relName,
+			node->alias == NULL ? "null" : node->alias);
+	}
+	printf("[Bailu.DEBUG] End of join tree\n");
+	fclose(file);
+	return joinTreeNodeList;
+}
+
+/*
  * _readBitmapset
  */
 static Bitmapset *

@@ -35,4 +35,6 @@ extern void *nodeRead(const char *token, int tok_len);
  */
 extern Node *parseNodeString(void);
 
+extern List * ReadJoinTreeNodeList(char * filepath);
+
 #endif							/* READFUNCS_H */

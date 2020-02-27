@@ -30,6 +30,142 @@
 #include "optimizer/placeholder.h"
 #include "optimizer/planmain.h"
 
+int
+generate_valid_join_orders_recursive(PlannerInfo * root, struct JoinTreeNode * node, List ** children, Bitmapset ** nodeBitmapSets, List ** validBitmapSets,
+	int * visitOrder, int * count)
+{
+	int level = 0;
+	Bitmapset * bitmap = NULL;
+	printf("[generate_valid_join_orders_recursive] Start processing node %d\n", node->nodeId);
+	// Process base relation.
+	if (children[node->nodeId] == NULL) {
+		ListCell * lc2;
+
+		// Check the corresponding relid for this node.
+		bool flag = false;
+		printf("[generate_valid_join_orders_recursive] Number of range table entries: %d\n", root->simple_rel_array_size - 1);
+		for (int rti = 1; rti < root->simple_rel_array_size; ++rti) {
+			RangeTblEntry * rte = root->simple_rte_array[rti];
+			if (rte == NULL) {
+				continue;
+			}
+			printf("[generate_valid_join_orders_recursive] Range table entry: [name %s, alias %s, relid %d, index %d]\n",
+				rte->eref->aliasname, rte->alias == NULL ? "null" : rte->alias->aliasname, rte->relid,
+					rti);
+			if (strcmp(rte->eref->aliasname, node->relName) == 0
+				&& (node->alias == NULL || strcmp(rte->alias->aliasname, node->alias) == 0))
+			{
+				printf("[generate_valid_join_orders_recursive] Found range table entry [name %s, alias %s, relid %d, index %d] for node [id %d, name %s, alias %s], visit order %d\n",
+					rte->eref->aliasname, rte->alias == NULL ? "null" : rte->alias->aliasname, rte->relid, rti,
+					node->nodeId, node->relName, node->alias == NULL ? "null" : node->alias, *count);
+				visitOrder[rti] = *count;
+				*count += 1;
+				bitmap = bms_add_member(bitmap, rti);
+				flag = true;
+				break;
+			}
+		}
+		// Do not force the plan if a table is not found in the range table entries.
+		if (!flag)
+		{
+			printf("[generate_valid_join_orders_recursive] Cannot force the plan because relation [%s, %s] is not found in range tables\n",
+				node->relName, node->alias == NULL ? "null" : node->alias);
+			return -1;
+		}
+		level = 1;
+	}
+	else
+	{
+		ListCell * lc;
+		foreach(lc, children[node->nodeId]) {
+			struct JoinTreeNode * child = (struct JoinTreeNode *)lfirst(lc);
+			int m = generate_valid_join_orders_recursive(root, child, children, nodeBitmapSets, validBitmapSets,
+				visitOrder, count);
+			if (m == -1) {
+				// There exists a base relation in the subtree that cannot be found.
+				return -1;
+			}
+			level += m;
+			printf("[generate_valid_join_orders_recursive] bitmap before %s\n",
+					bitmap == NULL ? "null" : bmsToString(bitmap));
+			bitmap = bms_add_members(bitmap, nodeBitmapSets[child->nodeId]);
+			printf("[generate_valid_join_orders_recursive] Add bitmap, child %d, parent %d\n",
+				child->nodeId, node->nodeId);
+		}
+	}
+	nodeBitmapSets[node->nodeId] = bitmap;
+	validBitmapSets[level] = lappend(validBitmapSets[level], bitmap);
+	printf("[Bailu.DEBUG]: Finish processing node %d at level %d with bitmap %s\n",
+		node->nodeId, level, bmsToString(bitmap));
+	return level;
+}
+
+ /*
+ * Bailu:
+ * generate_valid_join_orders
+ *  If join order is forced, generate all subsets of base relations that are compatible with
+ *  the forced join order.
+ */
+void
+generate_valid_join_orders(PlannerInfo * root, List * joinTreeNodeList)
+{
+	int n = list_length(joinTreeNodeList);
+
+	// Generate children information.
+	List ** children = (List **)palloc0(n * sizeof(List *));
+	for (int i = 0; i < n; ++i) {
+		children[i] = NULL;
+	}
+	ListCell * lc;
+	struct JoinTreeNode * rootNode;
+	foreach(lc, joinTreeNodeList) {
+		struct JoinTreeNode * node = (struct JoinTreeNode *)lfirst(lc);
+		struct JoinTreeNode * parent = node->parentNode;
+		if (parent != NULL) {
+			children[parent->nodeId] = lappend(children[parent->nodeId], node);
+			printf("[generate_valid_join_orders] Add child %d to parent %d\n",
+				node->nodeId, parent->nodeId);
+		}
+		else
+		{
+			rootNode = node;
+		}
+	}
+
+	// Recursively generate the valid join orders.
+	Bitmapset ** nodeBitmapSets = (Bitmapset **)palloc0(n * sizeof(Bitmapset *));
+	List ** validBitmapSets = (List **)palloc0(n * sizeof(List *));
+	int * visitOrder = (int *)palloc0(root->simple_rel_array_size * sizeof(int));
+	int count = 0;
+	for (int i = 0; i < n; ++i) {
+		nodeBitmapSets[i] = NULL;
+		validBitmapSets[i] = NULL;
+	}
+	int valid = generate_valid_join_orders_recursive(root, rootNode, children, nodeBitmapSets, validBitmapSets, visitOrder, &count);
+	if (valid == -1)
+	{
+		root->glob->validJoinBitmapSets = NULL;
+		root->glob->visitOrder = NULL;
+		list_free_deep(validBitmapSets);
+		pfree(visitOrder);
+		return;
+	}
+	// Print stats of valid bitmap sets.
+	for (int i = 1; i < n; ++i) {
+		printf("[generate_valid_join_orders] # of valid join orders at level %d: %d\n",
+			i, validBitmapSets[i] == NULL ? 0 : list_length(validBitmapSets[i]));
+		ListCell * lc;
+		foreach(lc, validBitmapSets[i]) {
+			Bitmapset * bitmap = (Bitmapset *)lfirst(lc);
+			printf("%s, ", bmsToString(bitmap));
+		}
+		printf("\n");
+	}
+	printf("[Bailu.DEBUG]: end of valid join orders\n");
+
+	root->glob->validJoinBitmapSets = validBitmapSets;
+	root->glob->visitOrder = visitOrder;
+}
 
 /*
  * query_planner
@@ -84,6 +220,19 @@ query_planner(PlannerInfo *root,
 	 * array for indexing base relations.
 	 */
 	setup_simple_rel_arrays(root);
+
+	/*
+	* Bailu
+	* Process plan forcing after the rangetable has been set up.
+	*/
+	if (root->glob->joinTreeNodeList != NIL)
+	{
+		generate_valid_join_orders(root, root->glob->joinTreeNodeList);
+		if (root->glob->validJoinBitmapSets == NIL) {
+			// If no valid join order is constructed, disable plan forcing.
+			root->glob->joinTreeNodeList = NIL;
+		}
+	}
 
 	/*
 	 * In the trivial case where the jointree is a single RTE_RESULT relation,
